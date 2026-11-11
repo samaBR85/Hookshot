@@ -129,7 +129,8 @@ static void test_keyboard() {
 
 // (menu_tick's Esc block, after the keys are read: what it reaches, stubbed)
 static std::atomic<bool> open_now;
-static int page, ask_sel, listening;
+static int page, ask_sel, listening, retake_listening;
+static void retake_help_now() {}   // (Retake picture's help, said again as the menu opens or closes)
 static bool changed, tune_mode;   // (tune_mode: the compact bar, open; it opens when its key is held as the menu opens)
 static bool compact_key_held;     // (menu_tick's tune_down: Right Shift, or Right Ctrl, held)
 static bool restart_ask() { return false; }

@@ -92,6 +92,7 @@ struct Options {
     int vram_budget = 0;
     int audio_output = 0; // (hookshot) the speakers the game mixes for: 0 Auto (the default output's), 1 Stereo, 2 5.1; read once, at the start (host/nn_audio.c; HOS_AUDIO_CHANNELS)
     int discord = 1;   // (hookshot) the Discord status (host/discord_rpc.c): 1 on, shown while a Discord client runs on this PC
+    int retake_key = 0;           // (hookshot) the Retake picture button: 0 none, a Windows key code, or -(1 + HOS_PAD_*) (vk_menu.cpp)
     int debug_tools = 0;   // (hookshot) the Debug tab's tools (#785: flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
     int volume = 100;     // (hookshot) the game's sound in percent, 0 to 100 (host/nn_audio.c: HOS_OPT_VOLUME, 27)
     int mute_background = 0;   // (hookshot) no sound while another window has the focus (host/nn_audio.c: HOS_OPT_MUTE_BACKGROUND, 28)
@@ -125,6 +126,8 @@ int resolution_scale();       // (the fixed path's scale in 1/10000: the Resolut
 void menu_option_set(int id, int value);   // (from the game's side: 7 the mouse's sensitivity, the - and = keys)
 int menu_setting(int index, MkwVkSetting* out);   // (the control bridge, host/control.c: the rows with a value)
 int menu_setting_set(const char* key, int value, MkwVkSetting* out);
+int menu_take_capture_request();   // (vk_replay.cpp: a map whose screenshot the Teleport page wants now, -1 none)
+void menu_store_capture(int map, const uint8_t* rgba, uint32_t w, uint32_t h);   // (that screenshot, RGBA: kept and saved)
 int menu_heart_protection();
 int menu_player_flight();
 int menu_free_camera();

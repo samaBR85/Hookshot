@@ -60,6 +60,8 @@ bool prebake_needed(uint32_t, uint32_t) { return resized; }
 void draw_startup(ui::Ctx&) { calls += "s"; }
 void draw_menu(ui::Ctx&) { calls += "m"; }
 void draw_fps(ui::Ctx&, bool under_banner) { calls += under_banner ? "F" : "f"; }
+std::atomic<int64_t> notice_until{0};   // (the Teleport list's "picture saved" line: none here)
+void draw_notice(ui::Ctx&) { calls += "n"; }
 ''' + fn + r'''
 int main() {
     for (bool startup : {false, true}) for (bool fps : {false, true}) for (bool menu : {false, true}) for (bool can : {true, false}) {

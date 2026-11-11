@@ -1,0 +1,37 @@
+/* The Teleport page's pictures (gpu/vk/vk_menu.cpp): one line a destination, in the order of oot_destinations in
+   host/hos_main.c (tests/test_teleport_pictures.py checks both). */
+#pragma once
+/* each Teleport destination's child and adult map (a screenshot's name in teleport_captures.bin), or nullptr */
+constexpr const char* teleport_maps[][2] = {
+    {"KokiriForest_Child", "KokiriForest_Adult"},
+    {"HyruleField_Child", "HyruleField_Adult"},
+    {"KakarikoVillage_Child", "KakarikoVillage_Adult"},
+    {"Market_Child", "Market_Adult"},
+    {"HyruleCastle", "GanonCastle"},
+    {"LostWood_Child", "LostWood_Adult"},
+    {"SacredForestMeadow_Child", "SacredForestMeadow_Adult"},
+    {"HyruleField_Child", "HyruleField_Adult"},
+    {"Graveyard_Child", "Graveyard_Adult"},
+    {"DeathMountainTrail_Child", "DeathMountainTrail_Adult"},
+    {"DeathMountainCrater_Child", "DeathMountainCrater_Adult"},
+    {"GoronCity_Child", "GoronCity_Adult"},
+    {"ZoraRiver_Child", "ZoraRiver_Adult"},
+    {"ZoraDomain_Child", "ZoraDomain_Adult"},
+    {"ZoraFountain_Child", "ZoraFountain_Adult"},
+    {"GerudoValley_Child", "GerudoValley_Adult"},
+    {nullptr, "GerudoFortress_Adult"},
+    {"HountedWasteland_Child", "HountedWasteland_Adult"},
+    {"DesertColossus_Child", "DesertColossus_Adult"},
+    {"InsideTheDekuTree", "InsideTheDekuTree"},
+    {"DodongoCavern", "DodongoCavern"},
+    {"InsideJabuJabuBelly", "InsideJabuJabuBelly"},
+    {"ForestTemple", "ForestTemple"},
+    {"FireTemple", "FireTemple"},
+    {"WaterTemple", "WaterTemple"},
+    {"ShadowTemple", "ShadowTemple"},
+    {"SpiritTemple", "SpiritTemple"},
+    {"BottomOfTheWell", "BottomOfTheWell"},
+    {"IceCavern", "IceCavern"},
+    {"GerudoTrainingGround", "GerudoTrainingGround"},
+    {"InsideGanonCastle", "InsideGanonCastle"},
+};

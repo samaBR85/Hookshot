@@ -3414,6 +3414,71 @@ std::shared_ptr<std::vector<uint8_t>> shot_pixels(uint64_t at_value, int64_t at_
     const uint8_t* const sm = (const uint8_t*)shot_maps[at_present & 1];
     return std::make_shared<std::vector<uint8_t>>(sm, sm + (size_t)kShotW * kShotH * 4);
 }
+// (the Teleport page's own screenshots, vk_menu.cpp: when the game side says Link has stayed in a map, the middle 60% of the
+// picture shown, away from the HUD's corners, at 480x270; recorded with one present and read at the next, handed to the menu)
+struct TeleportShot {
+    VkImage image = VK_NULL_HANDLE;
+    VmaAllocation image_alloc = nullptr;
+    VkBuffer buf = VK_NULL_HANDLE;
+    VmaAllocation buf_alloc = nullptr;
+    void* map = nullptr;
+    bool tried = false;
+    int pending_map = -1;
+    uint64_t value = 0;
+};
+TeleportShot tp_shot;
+constexpr uint32_t kTpShotW = 480, kTpShotH = 270;
+void teleport_capture(VkCommandBuffer cmd, VkImage src, uint32_t sw, uint32_t sh, const int crop[4], uint64_t value) {
+    if (tp_shot.pending_map >= 0) {   // (the last one's pixels: its present is behind this one)
+        wait_value(tp_shot.value);
+        invalidate_mapped(tp_shot.buf_alloc, (uint64_t)kTpShotW * kTpShotH * 4);
+        menu_store_capture(tp_shot.pending_map, (const uint8_t*)tp_shot.map, kTpShotW, kTpShotH);
+        tp_shot.pending_map = -1;
+    }
+    if (!src || present_native_pq.load(std::memory_order_relaxed)) return;
+    const int want = menu_take_capture_request();
+    if (want < 0) return;
+    if (!tp_shot.image) {
+        if (tp_shot.tried) return;
+        tp_shot.tried = true;
+        VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ci.imageType = VK_IMAGE_TYPE_2D;
+        ci.format = VK_FORMAT_R8G8B8A8_UNORM;
+        ci.extent = {kTpShotW, kTpShotH, 1};
+        ci.mipLevels = ci.arrayLayers = 1;
+        ci.samples = VK_SAMPLE_COUNT_1_BIT;
+        ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        VkImage image = VK_NULL_HANDLE;
+        VmaAllocation image_alloc = nullptr;
+        if (!create_image(ci, image, image_alloc)) {
+            logf("vk: teleport screenshots: no image could be made");
+            return;
+        }
+        if (!create_buffer((uint64_t)kTpShotW * kTpShotH * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, tp_shot.buf, tp_shot.buf_alloc,
+                           &tp_shot.map)) {
+            destroy_image(image, image_alloc);
+            logf("vk: teleport screenshots: no buffer could be made");
+            return;
+        }
+        tp_shot.image = image, tp_shot.image_alloc = image_alloc;
+    }
+    const PresentSourceRect r = present_source_rect(sw, sh, crop);
+    if (!r.w || !r.h) return;
+    image_barrier(cmd, tp_shot.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkImageBlit b{};
+    b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    b.srcOffsets[0] = {(int)(r.x + r.w / 5), (int)(r.y + r.h / 5), 0};
+    b.srcOffsets[1] = {(int)(r.x + r.w - r.w / 5), (int)(r.y + r.h - r.h / 5), 1};
+    b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    b.dstOffsets[1] = {(int)kTpShotW, (int)kTpShotH, 1};
+    vkCmdBlitImage(cmd, src, VK_IMAGE_LAYOUT_GENERAL, tp_shot.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
+    image_barrier(cmd, tp_shot.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    const VkBufferImageCopy c{0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {kTpShotW, kTpShotH, 1}};
+    vkCmdCopyImageToBuffer(cmd, tp_shot.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, tp_shot.buf, 1, &c);
+    capture_host_read_barrier(cmd, tp_shot.buf, (VkDeviceSize)kTpShotW * kTpShotH * 4);
+    tp_shot.pending_map = want, tp_shot.value = value;
+}
+
 void do_present(const nvn_tex* t, const int crop[4]) {
     static PendingShot pending;
     // (hookshot) NVIDIA Reflex (vk_reflex.cpp): this frame's simulation ended, its submission starts; on the way out (after the
@@ -3572,6 +3637,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
             }
         }
         shot_ask_record(r.cmd, src, sw, sh, crop, value);   // (the control bridge's, host/control.c)
+        teleport_capture(r.cmd, src, sw, sh, crop, value);   // (the Teleport page's own screenshots)
         memory_end_submission(r.cmd, r.part);
         full_barrier(r.cmd);
         submit_recording(r);   // (nothing is stopped at a present: drain)

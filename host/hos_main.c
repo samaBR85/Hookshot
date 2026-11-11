@@ -16,6 +16,7 @@
 #include "hos_wide_size.h"   /* (the widescreen picture's size, shared with the Insert menu) */
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/oot_cheat_items.h"
+#include "../gpu/vk/oot_teleport_capture.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1278,6 +1279,40 @@ static int oot_flight_moved_away(Ctx *c, uint64_t actor, const float held[3]) {
     return apart > 2.0f * 2.0f;
 }
 
+/* The Teleport page's own screenshots (gpu/vk/vk_menu.cpp): once Link has stayed 3 s in a map of oot_capture_maps, with no
+   map loading and no event playing, the menu is told (OOT_TP_CAPTURE_ID); it takes the picture if it has none of that map
+   yet. Told again only after another map. Runs with the player's update, which stops while the game is paused. */
+static void oot_capture_tick(Ctx *c, int64_t now) {
+    void rx_option_set(int id, int value);
+    static char banc[64];
+    static int64_t since;
+    static int told = 1;
+    char now_banc[64];
+    if (!oot_gamedata_string(c, 0x1d6189dau, now_banc, sizeof now_banc) || !now_banc[0]) return;   /* Sequence_CurrentBanc */
+    int loading = 0;
+    const uint64_t events = oot_singleton(c, OOT_EVENTMGR_SLOT);
+    const int busy = !events || recomp_load64(c, events + 104) ||
+                     (oot_gamedata_bool(c, 0xef2b60c2u, &loading) && loading);   /* an event, Sequence_IsLoadingBanc */
+    if (strcmp(now_banc, banc)) {
+        snprintf(banc, sizeof banc, "%s", now_banc);
+        since = now, told = 0;
+        rx_option_set(OOT_TP_MAP_ID, -1);   /* (no retake until settled here) */
+        return;
+    }
+    if (busy) {
+        since = now;
+        return;
+    }
+    if (told || now - since < 3000000000LL) return;
+    told = 1;
+    for (int i = 0; i < OOT_CAPTURE_MAPS; i++)
+        if (!strcmp(oot_capture_maps[i], banc)) {
+            rx_option_set(OOT_TP_MAP_ID, i);   /* (the map a retake takes: the Retake picture shortcut) */
+            rx_option_set(OOT_TP_CAPTURE_ID, i);
+            break;
+        }
+}
+
 static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components) {
     int rx_option(int id, int otherwise);
     static uint64_t flying_actor, marked_actor, marked_controller;
@@ -1305,6 +1340,7 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     }
     oot_teleport_followup(c);
     oot_inventory_refresh(c, now);
+    oot_capture_tick(c, now);
     oot_player_speed(c, components);
     oot_map_refresh(c, now);
     if (action >= OOT_CHEAT_ITEM_ACTION && action < OOT_CHEAT_ITEM_ACTION + 256 * (int)OOT_ITEM_COUNT) {

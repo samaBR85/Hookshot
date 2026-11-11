@@ -22,6 +22,8 @@
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <filesystem>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -34,6 +36,8 @@
 #include "vk_fps.h"    // (the FPS counter's levels and numbers)
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
 #include "oot_cheat_items.h"
+#include "oot_teleport_pictures.h"
+#include "oot_teleport_capture.h"   // (the Teleport page's own screenshots: the maps, as the game side numbers them)   // (the Teleport page's pictures: each destination's maps)
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
 #include "vk_ui.h"
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
@@ -72,6 +76,7 @@ extern char** environ;
 #define HOOKSHOT_VERSION "unknown"
 #endif
 
+namespace ImGui { IMGUI_API void RegisterUserTexture(ImTextureData* tex); }
 namespace mkwvk {
 int display_refresh_mhz();   // (vk_main.cpp: the window's display, asked once a second at most: the FPS counter's V-Sync target)
 HWND app_window();
@@ -124,6 +129,8 @@ const char* tx_framegen(int v) {
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
 const char* tx_fps_level(int v) { return fps_stats::level_name(v); }
 const char* tx_fps_corner(int v) { return fps_stats::corner_name(v); }   // (the FPS counter row: Off, FPS, Frame time, Graph, Breakdown)
+const char* retake_name(int code);   // (the Retake picture button's name: further down, by the Controls page's names)
+char retake_help[240] = "";        // (Retake picture's help: what to do, or why a button was not taken)
 const char* tx_profile(int v) { return v ? "Handheld" : "Docked"; }   // (opts.handheld: the Profile row)
 const char* tx_menu_shortcut(int v) {
     // (F1 is never turned off: the menu is always one key away. Esc as well, as a PC game's pause menu)
@@ -1375,6 +1382,7 @@ Row rows[] = {
      "Move and look with your usual controls. Page Up / Page Down or R / L changes height.", nullptr, false, true, 7},
     {TAB_DEBUG, "Teleport", nullptr, 0, 0, 0, nullptr,
      "Opens the map list. Link travels through the game's own map change, in his current age.", nullptr, false, true, 8},
+    {TAB_DEBUG, "Retake picture", nullptr, 0, 0, 0, nullptr, retake_help, nullptr, false, true, 13},
     {TAB_DEBUG, "Switch age", nullptr, 0, 0, 0, nullptr,
      "Swaps Link between child and adult and reloads this map in the other age (the Market when this map has no match).", nullptr, false, true, 9},
     {TAB_DEBUG, "Inventory", nullptr, 0, 0, 0, nullptr,
@@ -1575,6 +1583,7 @@ bool age_shown(int i) { return i == 9 && link_age.load(std::memory_order_relaxed
 const char* cheat_confirm(int i) {
     static const char* const says[kCheatRows] = {"Toggle", "Toggle", "Apply", "Apply", "Set", nullptr, "Apply", "Toggle", "Open list",
                                                  "Switch", "Open", nullptr};
+    if (i == 13) return "Set";   // (Retake picture: waits for the button)
     return i >= 0 && i < kCheatRows ? says[i] : nullptr;
 }
 /// The button label on an action tool's row ("": not a button action)
@@ -1873,7 +1882,8 @@ void save() {
             if (!eq || eq == line) continue;
             const std::string key(line, (size_t)(eq - line));
             // (memory_budget and auto_for too: save() writes them, and the file's old line, kept after it, won at the next start)
-            bool mine = key == "microphone_device" || key == "options_version" || key == "memory_budget" || key == "auto_for" ||
+            bool mine = key == "retake_key" ||   // (Retake picture's button)
+                        key == "microphone_device" || key == "options_version" || key == "memory_budget" || key == "auto_for" ||
                         key == "auto_tuned" || key == "auto_output" || key == "auto_steps";
             // (and the Mesh shaders row's line, no longer read (gpu/vk/mesh_mode.h): dropped, not kept for nothing)
             mine |= key == "mesh_shaders";
@@ -1898,6 +1908,7 @@ void save() {
                 fprintf(f, "%s=%d\n", ini_key(r), saved_value(r.value));
             }
         }
+        fprintf(f, "retake_key=%d\n", opts.retake_key);   // (hookshot: the Retake picture button, not a row's value)
         if (!mic_want.empty()) fprintf(f, "microphone_device=%s\n", mic_want.c_str());   // (hookshot: also while it is unplugged)
         // (not a row: the budgets Custom keeps. 0 too: with a preset on, the VRAM budget row chosen by the player, which the next
         // start must not take back to the preset's)
@@ -2427,8 +2438,39 @@ const char* pad_name(int p) {
     const int face = opts.prompts ? opts.prompts - 1 : host && host->prompt_face ? host->prompt_face() : -1;
     return t[face >= 0 && face < HOS_PROMPT_KEYBOARD ? face + 1 : 0][p];
 }
+/// A symbol key as the player's keyboard layout prints it, with its name: "' (Apostrophe)"; null when the layout has none
+const char* symbol_key_name(int vk) {
+    static char b[48];
+#ifdef _WIN32
+    const UINT m = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_CHAR);
+    const wchar_t ch = (wchar_t)(m & 0xffff);   // (a dead key's flag is the top bit: the accent itself)
+#else   // (Linux: the US layout's, as the key codes are)
+    static const char us[] = ";=,-./`";   // (VK_OEM_1 0xBA to VK_OEM_3 0xC0)
+    static const char us2[] = "[\\]'";    // (VK_OEM_4 0xDB to VK_OEM_7 0xDE)
+    const wchar_t ch = vk >= 0xBA && vk <= 0xC0 ? (wchar_t)us[vk - 0xBA] : vk >= 0xDB && vk <= 0xDE ? (wchar_t)us2[vk - 0xDB] : 0;
+#endif
+    if (!ch || ch < 0x21) return nullptr;
+    static const struct { wchar_t c; const char* name; } names[] = {
+        {L'`', "Backtick"}, {L'\'', "Apostrophe"}, {L'"', "Quote"}, {L';', "Semicolon"}, {L':', "Colon"},
+        {L'=', "Equals"}, {L'+', "Plus"}, {L',', "Comma"}, {L'-', "Minus"}, {L'.', "Period"}, {L'/', "Slash"},
+        {L'\\', "Backslash"}, {L'[', "Left bracket"}, {L']', "Right bracket"}, {L'~', "Tilde"}, {L'^', "Caret"},
+        {L'<', "Less than"}, {L'>', "Greater than"}, {L'#', "Hash"}, {0x00b4, "Acute"}, {0x00a8, "Diaeresis"},
+        {0x00e7, "C cedilla"}, {0x00b0, "Degree"}, {0x00a7, "Section"}, {0x00f1, "N tilde"},
+    };
+    char c8[8] = {};
+#ifdef _WIN32
+    WideCharToMultiByte(CP_UTF8, 0, &ch, 1, c8, sizeof c8 - 1, nullptr, nullptr);
+#else
+    c8[0] = (char)ch;   // (ASCII, the table above)
+#endif
+    for (const auto& n : names)
+        if (n.c == ch) return snprintf(b, sizeof b, "%s (%s)", c8, n.name), b;
+    return snprintf(b, sizeof b, "%s", c8), b;
+}
 const char* key_name(int vk) {
     static char b[16];
+    if ((vk >= 0xBA && vk <= 0xC1) || (vk >= 0xDB && vk <= 0xDF) || vk == 0xE2)   // (VK_OEM_1 to VK_ABNT_C1, _4 to _8, _102)
+        if (const char* n = symbol_key_name(vk)) return n;   // (the layout's own symbol: ABNT2's ' is US's `)
     if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) return b[0] = (char)vk, b[1] = 0, b;
     if (vk >= VK_F1 && vk <= VK_F12) return snprintf(b, sizeof b, "F%d", vk - VK_F1 + 1), b;
     if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD0 + 9) return snprintf(b, sizeof b, "Num %d", vk - VK_NUMPAD0), b;
@@ -2489,6 +2531,56 @@ const std::vector<int>& bindable_keys() {
             k.push_back(c);
     }
     return k;
+}
+// ---- (hookshot) the Retake picture button: one key, mouse button or gamepad button, chosen on the Debug tab. opts.retake_key:
+// 0 none, a Windows key code (keys and mouse buttons), or -(1 + a HOS_PAD_* position) for a gamepad's. One that the game or
+// Hookshot already uses is not taken: it would do both
+const char* retake_name(int code) {
+    if (!code) return "None";
+    return code < 0 ? pad_name(-code - 1) : key_name(code);
+}
+/// What a button is used for already, or nullptr when it is free
+const char* retake_conflict(int code) {
+    static char why[96];
+    auto control = [](int button) -> const char* {
+        for (const Control& c : controls)
+            if (c.button == button) return c.name;
+        return "a game control";
+    };
+    if (code < 0) {
+        const int p = -code - 1;
+        if (p == HOS_PAD_GUIDE || p == HOS_PAD_TOUCHPAD) return "opening this menu";
+        if (host && host->binding)
+            for (int b = 0; b < HOS_SW_N; b++)
+                if (host->binding(HOS_BIND_PAD, b, 0) == p) return snprintf(why, sizeof why, "the game's %s", control(b)), why;
+        if (p == HOS_PAD_BACK || p == HOS_PAD_START) return "opening this menu (Select and Start together)";
+        return nullptr;
+    }
+    switch (code) {
+    case VK_INSERT: case VK_F1: case VK_ESCAPE: return "opening this menu";
+    case VK_F11: return "Fullscreen";
+    case VK_OEM_MINUS: case VK_OEM_PLUS: case VK_SUBTRACT: case VK_ADD: return "the mouse's sensitivity";
+    case VK_PRIOR: case VK_NEXT: case VK_CONTROL: return "the free camera";
+    case VK_DELETE: return "clearing this button";
+    }
+    if (host && host->binding)
+        for (int b = 0; b < HOS_KEY_N; b++)
+            for (int slot = 0; slot < 2; slot++)
+                if (host->binding(HOS_BIND_KEY, b, slot) == code) return snprintf(why, sizeof why, "the game's %s", control(b)), why;
+    return nullptr;
+}
+int retake_listening = 0;      // (1: Retake picture waits for its button)
+bool retake_armed = false;     // (once what started it was let go)
+void retake_help_now() {
+    if (retake_listening) snprintf(retake_help, sizeof retake_help, "Press the key, mouse button or controller button to use. "
+                                   "Esc cancels, Delete clears.");
+    else if (!opts.retake_key)
+        snprintf(retake_help, sizeof retake_help, "The Teleport list shows a picture of each place, taken from your own game the "
+                 "first time Link stays there a few seconds. Choose a button here to take a new one.");
+    else
+        snprintf(retake_help, sizeof retake_help, "The Teleport list shows a picture of each place, taken from your own game the "
+                 "first time Link stays there a few seconds. Press %s in play for a new one of where you are.",
+                 retake_name(opts.retake_key));
 }
 int page = 0;          // 0 the options, 1 the controls, 3 the teleport list, 4 the inventory, 5 the restart question (2: was the
                        // debug tools' own page, now on the Debug tab)
@@ -2649,7 +2741,7 @@ void help_box(ui::Ctx& c, float x0, float x1, float y0, const char* title, const
     const float s = c.s, w = x1 - x0 - 48 * s;
     const float th = help ? ui::para(c, c.f.body, 18 * s, ImVec2(), 0, help, w, false) : 0,
                 hh = hint ? ui::para(c, c.f.body, 16 * s, ImVec2(), 0, hint, w - 18 * s, false) : 0;
-    const float text_h = th + (hint ? 14 * s + hh : 0), note = after_restart ? 30 * s : 0;
+    const float text_h = th + (hint ? (help ? 14 * s : 0) + hh : 0), note = after_restart ? 30 * s : 0;   // (no help: the hint in its place)
     const float fixed = 22 * s + (title ? 32 * s : 0) + note + (gold_line ? 52 * s : 0) + 22 * s;
     float body = std::max(min_h, text_h);
     if (y0 + fixed + body > y_max) y0 = std::max(y_min, y_max - fixed - body);
@@ -2666,7 +2758,7 @@ void help_box(ui::Ctx& c, float x0, float x1, float y0, const char* title, const
     }
     if (help) ui::para(c, c.f.body, 18 * s, ImVec2(x0 + 24 * s, y), ui::kInk, help, w);
     if (hint) {
-        const float hy = y + th + 14 * s;
+        const float hy = y + (help ? th + 14 * s : 0);
         c.d->AddRectFilled(ImVec2(x0 + 24 * s, hy + 2 * s), ImVec2(x0 + 26.5f * s, hy + hh - 2 * s), ui::kAccent, s);
         ui::para(c, c.f.body, 16 * s, ImVec2(x0 + 40 * s, hy), ui::kSoft, hint, w - 18 * s);
     }
@@ -2780,8 +2872,8 @@ std::string restart_line(ui::Ctx& c, float px, float width) {
 /// (hookshot) The Debug tab's order: the tools' rows by their group (Row::cheat), Up and Down walking them so; Inventory item
 /// and Change quantity are not shown (the Inventory page edits every amount)
 struct DebugGroup { const char* title; int from, to; };   // (debug_tools_order[from, to))
-constexpr int debug_tools_order[] = {0, 1, 11, 9, 10, 8, 2, 3, 7, 4};
-constexpr DebugGroup debug_groups[] = {{"Player", 0, 5}, {"Travel", 5, 8}, {"Camera & world", 8, 10}};
+constexpr int debug_tools_order[] = {0, 1, 11, 9, 10, 8, 13, 2, 3, 7, 4};
+constexpr DebugGroup debug_groups[] = {{"Player", 0, 5}, {"Travel", 5, 9}, {"Camera & world", 9, 11}};
 constexpr int kDebugGroups = sizeof debug_groups / sizeof debug_groups[0];
 constexpr int kDebugTools = sizeof debug_tools_order / sizeof debug_tools_order[0];
 /// The Debug tab's rows as shown (its row numbers, tab_row_to_global's): the switch, the tools in debug_tools_order while they
@@ -2833,6 +2925,8 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
             for (int v = r.lo; v <= r.hi; v += r.step) w = std::max(w, ui::size_of(c.f.strong, px, r.text(v)).x);
             return w + (tight ? 56 : 68) * s;
         }
+        if (r.cheat == 13)   // (Retake picture: a long button name, or the prompt while it listens)
+            return ui::size_of(c.f.strong, px, "Right stick press").x + 60 * s;
         if (r.cheat == 0 || r.cheat == 1 || r.cheat == 7 || r.value) return halves_w + pad;
         if (is_share_row(r)) return ui::size_of(c.f.strong, px, "Not saved").x + (tight ? 56 : 60) * s;   // (Save, Saved, Not saved)
         const std::string v = r.cheat == 11 ? "1.25x" : cheat_value(r.cheat);   // (Movement speed: its widest, the cell kept still)
@@ -2909,6 +3003,8 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
             choice_cell(c, va, vb, share_value.empty() ? "Save" : share_value, selected, false, false);
         } else if (r.cheat == 0 || r.cheat == 1 || r.cheat == 7) {
             halves_cell(c, va, vb, "Off", "On", cheat_value(r.cheat) == "On", selected, false);
+        } else if (r.cheat == 13) {   // (Retake picture: its button, or the prompt while it waits)
+            choice_cell(c, va, vb, retake_listening ? "Press a button..." : retake_name(opts.retake_key), selected, false, false);
         } else if (age_shown(r.cheat)) {   // (Link's age now: the other half switches)
             halves_cell(c, va, vb, "Kid", "Adult", link_age.load(std::memory_order_relaxed) == 1, selected, false);
         } else {
@@ -3104,6 +3200,7 @@ void draw_options(ui::Ctx& c) {
     if (cur_tab == TAB_MOTION) prompt_list[prompts_n++] = {ui::kBack, "Back"};   // (Esc: to Controls)
     else {
         prompt_list[prompts_n++] = {ui::kTabs, "Tabs"}, prompt_list[prompts_n++] = {ui::kBack, "Close"};
+        if (retake_listening) prompt_list[0] = {ui::kBack, "Cancel"}, prompts_n = 1;   // (waiting for a button: Esc only, as on Controls)
     }
     const float bar_top = ui::prompt_bar_top(c);   // (the strip itself drawn last, over all: below)
     float bottom = std::min(c.h - c.safe, bar_top) - 10 * s;   // (the rows end above the prompts)
@@ -3474,6 +3571,109 @@ void draw_inventory(ui::Ctx& c) {
     ui::prompt_bar(c, prompts, prompts_n);   // (the prompts, on top of the help and the cards)
 }
 
+// (the Teleport page's pictures: teleport_captures.bin in the game folder, the screenshots taken in play (vk_replay.cpp), read
+// when the page is first drawn and kept in memory; nothing is shipped. One texture shows the chosen one, its pixels swapped when
+// the choice changes: the UI's descriptor pool holds 16 textures, not one a map)
+struct TeleportPicture {
+    uint32_t w = 0, h = 0;
+    std::vector<unsigned char> rgba;
+};
+std::map<std::string, TeleportPicture> teleport_captures;   // (by map; std::map: its nodes stay put)
+std::mutex teleport_captures_mu;   // (the captures come from the replay's thread)
+std::once_flag teleport_pictures_once;   // (read once, by whichever thread asks first)
+std::atomic<int> teleport_capture_want{-1};
+std::atomic<int> teleport_map_now{-1};   // (the map Link is settled in, as the game side says: what a retake takes)
+std::atomic<int64_t> notice_until{0};   // (a line over the game while the menu is closed: a screenshot taken)
+char notice_text[96];
+ImTextureData* teleport_tex = nullptr;
+const TeleportPicture* teleport_tex_shows = nullptr;
+/// A file in the game folder, beside the executable (\\ on Windows, / on Linux: as ini_path), or "" (logged) when unknown
+std::string game_folder_file(const char* name) {
+    char exe[MAX_PATH];
+    const DWORD n = game_module_path(exe, MAX_PATH);
+    const std::string path(exe, n && n < MAX_PATH ? n : 0);
+    const size_t slash = path.find_last_of("\\/");
+    if (slash == std::string::npos) {
+        logf("menu: no game folder for %s", name);
+        return "";
+    }
+    return path.substr(0, slash + 1) + name;
+}
+/// The pictures of a 'FTP1' file: count, then { name[48], width, height, RGBA }
+void read_picture_file(const std::string& path, std::map<std::string, TeleportPicture>& into) {
+    FILE* f = path.empty() ? nullptr : fopen(path.c_str(), "rb");
+    if (!f) return;
+    char magic[4];
+    uint32_t count = 0;
+    if (fread(magic, 1, 4, f) == 4 && !memcmp(magic, "FTP1", 4) && fread(&count, 4, 1, f) == 1 && count <= 256) {
+        for (uint32_t i = 0; i < count; ++i) {
+            char name[48];
+            uint32_t wh[2];
+            if (fread(name, 1, 48, f) != 48 || fread(wh, 4, 2, f) != 2 || !wh[0] || wh[0] > 2048 || !wh[1] || wh[1] > 2048) {
+                logf("menu: %s: picture %u of %u unreadable, the rest left out", path.c_str(), i + 1, count);
+                break;
+            }
+            name[47] = 0;
+            TeleportPicture p;
+            p.w = wh[0], p.h = wh[1];
+            p.rgba.resize((size_t)p.w * p.h * 4);
+            if (fread(p.rgba.data(), 1, p.rgba.size(), f) != p.rgba.size()) break;
+            into[name] = std::move(p);
+        }
+    }
+    fclose(f);
+}
+void read_teleport_pictures_now() {
+    std::lock_guard lk(teleport_captures_mu);
+    read_picture_file(game_folder_file("teleport_captures.bin"), teleport_captures);
+    logf("menu: Teleport pictures: %d screenshots", (int)teleport_captures.size());
+}
+void read_teleport_pictures() { std::call_once(teleport_pictures_once, read_teleport_pictures_now); }
+/// The picture destination i shows: the screenshot of its map for Link's age now (Travel keeps his age), else of the other
+/// age's map, else none (the page says one comes)
+const TeleportPicture* teleport_choose(int i) {
+    constexpr int kMaps = sizeof teleport_maps / sizeof teleport_maps[0];
+    if (i < 0 || i >= kMaps) return nullptr;
+    const int first = link_age.load(std::memory_order_relaxed) == 1;
+    for (int k = 0; k < 2; ++k)
+        if (const char* map = teleport_maps[i][first ^ k]) {
+            const auto it = teleport_captures.find(map);
+            if (it != teleport_captures.end()) return &it->second;
+        }
+    return nullptr;
+}
+/// The picture of the map destination i arrives in, in the page's one texture, or null
+ImTextureData* teleport_picture(int i) {
+    read_teleport_pictures();
+    std::lock_guard lk(teleport_captures_mu);
+    const TeleportPicture* pic = teleport_choose(i);
+    if (!pic) return nullptr;
+    if (teleport_tex && (teleport_tex->Width != (int)pic->w || teleport_tex->Height != (int)pic->h)) {
+        static const TeleportPicture* said = nullptr;   // (once a picture: the page is drawn every frame)
+        if (said != pic) said = pic, logf("menu: a Teleport picture is %ux%u, not the texture's %dx%d: not shown", pic->w, pic->h,
+                                          teleport_tex->Width, teleport_tex->Height);
+        return nullptr;
+    }
+    if (!teleport_tex) {
+        teleport_tex = IM_NEW(ImTextureData)();
+        teleport_tex->Create(ImTextureFormat_RGBA32, (int)pic->w, (int)pic->h);
+        teleport_tex->UseColors = true;
+        ImGui::RegisterUserTexture(teleport_tex);
+    }
+    if (teleport_tex_shows != pic) {
+        memcpy(teleport_tex->GetPixels(), pic->rgba.data(), pic->rgba.size());
+        teleport_tex_shows = pic;
+        if (teleport_tex->Status == ImTextureStatus_OK) {   // (made already: its pixels sent again)
+            const ImTextureRect all = {0, 0, (unsigned short)pic->w, (unsigned short)pic->h};
+            teleport_tex->Updates.clear();
+            teleport_tex->Updates.push_back(all);
+            teleport_tex->UpdateRect = all;
+            teleport_tex->SetStatus(ImTextureStatus_WantUpdates);
+        }
+    }
+    return teleport_tex;
+}
+
 void draw_teleport(ui::Ctx& c) {
     const float s = c.s;
     char count[32];
@@ -3490,8 +3690,35 @@ void draw_teleport(ui::Ctx& c) {
     const float strip = 58 * s, detail = bar - 14 * s - strip;
     const float bottom = std::max(top, detail - 6 * s), gap = 10 * s, pitch = 48 * s, head = 40 * s;
     const char* const note = teleport_notes[teleport_choice];
+    float help_top = std::max(hh + 26 * s, c.h * .30f);
+    if (ImTextureData* pic = narrow ? nullptr : teleport_picture(teleport_choice)) {
+        // (the destination's picture in a box of its own above the help, a thin gold edge round it)
+        const float pad = 12 * s, iw = hx1 - hx0 - 2 * pad, ih = iw * pic->Height / (float)pic->Width;
+        const ImVec2 a(hx0, hh + 26 * s), b(hx1, hh + 26 * s + ih + 2 * pad);
+        ui::box(c, a, b);
+        const ImVec2 ia(a.x + pad, a.y + pad), ib(b.x - pad, b.y - pad);
+        c.d->AddImageRounded(pic->GetTexRef(), ia, ib, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 3 * s);
+        c.d->AddRect(ia, ib, ui::alpha(ui::kAccent, 0.8f), 3 * s, 0, std::max(1.0f, 1.5f * s));
+        help_top = b.y + 14 * s;
+    } else if (!narrow) {
+        // (no screenshot of this place yet: the frame, and what fills it)
+        const float pad = 12 * s, ih = (hx1 - hx0 - 2 * pad) * 9 / 16;
+        const ImVec2 a(hx0, hh + 26 * s), b(hx1, hh + 26 * s + ih + 2 * pad);
+        ui::box(c, a, b);
+        const ImVec2 ia(a.x + pad, a.y + pad), ib(b.x - pad, b.y - pad);
+        c.d->AddRectFilled(ia, ib, ui::kCellDark, 3 * s);   // (a place kept for the picture, not a hole onto the game)
+        c.d->AddRect(ia, ib, ui::alpha(ui::kEdge, 0.8f), 3 * s, 0, std::max(1.0f, 1.5f * s));
+        const float cx = (ia.x + ib.x) * 0.5f, cy = (ia.y + ib.y) * 0.5f;
+        ui::text_mid_centre(c, c.f.heading, 20 * s, cx, cy - 30 * s, ui::kInk, "No picture yet");
+        const float rule = 34 * s;   // (the sections' gold rule, a diamond in its middle)
+        c.d->AddLine(ImVec2(cx - rule - 9 * s, cy), ImVec2(cx - 9 * s, cy), ui::alpha(ui::kAccent, 0.8f), std::max(1.0f, s));
+        c.d->AddLine(ImVec2(cx + 9 * s, cy), ImVec2(cx + rule + 9 * s, cy), ui::alpha(ui::kAccent, 0.8f), std::max(1.0f, s));
+        ui::diamond(c, ImVec2(cx, cy), 4 * s, ui::kGoldHi);
+        ui::text_mid_centre(c, c.f.body, 15 * s, cx, cy + 26 * s, ui::kDim, "Taken the first time Link stays here a few seconds");
+        help_top = b.y + 14 * s;
+    }
     if (!narrow)
-        help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * .30f), teleport_names[teleport_choice],
+        help_box(c, hx0, hx1, help_top, teleport_names[teleport_choice],
                  "Select a destination, then Travel (or Enter) to go to its map entrance. Link keeps his current age.", note, nullptr, 0,
                  false, hh + 18 * s, bar - 12 * s);
     // (as many columns as fit the longest name and its tag, at most 4; each section under its heading, the cards scrolled to
@@ -4035,6 +4262,7 @@ void startup_screen(const StartupView* view) {
 
 static bool first_start = false;   // (menu_init: no options file yet. menu_first_start_for_gpu picks the preset for the card)
 void menu_init() {
+    retake_help_now();   // (Retake picture's help, before the first drawing)
     static bool done;
     if (done) return;
     done = true;
@@ -4083,6 +4311,7 @@ void menu_init() {
             }
             if (!strcmp(line, "memory_budget")) opts.budget = std::min(std::max(atoi(eq + 1), 0), 5), has_memory_budget = true;
             has_vram_budget |= !strcmp(line, "vram_budget");
+            if (!strcmp(line, "retake_key")) opts.retake_key = std::clamp(atoi(eq + 1), -32, 255);
             if (!strcmp(line, "microphone_device")) {   // (hookshot: the microphone, by its name)
                 mic_want = mic_key(eq + 1);
             }
@@ -4206,6 +4435,38 @@ void menu_set_gpu_count(int count) {
         if (rows[i].value == &opts.gpu_device) restart_state.restart_value(restart_slot[i], opts.gpu_device);
 }
 
+int menu_take_capture_request() {
+    const int want = teleport_capture_want.exchange(-1, std::memory_order_relaxed);
+    return open_now.load(std::memory_order_relaxed) ? -1 : want;
+}
+void menu_store_capture(int map, const uint8_t* rgba, uint32_t w, uint32_t h) {
+    if (map < 0 || map >= OOT_CAPTURE_MAPS) return;
+    read_teleport_pictures();   // (the file's others first: it is written whole)
+    std::lock_guard lk(teleport_captures_mu);
+    TeleportPicture& p = teleport_captures[oot_capture_maps[map]];
+    p.w = w, p.h = h;
+    p.rgba.assign(rgba, rgba + (size_t)w * h * 4);
+    for (size_t i = 3; i < p.rgba.size(); i += 4) p.rgba[i] = 255;   // (opaque, whatever the picture's alpha held)
+    if (teleport_tex_shows == &p) teleport_tex_shows = nullptr;   // (sent again if it is the one shown)
+    const std::string path = game_folder_file("teleport_captures.bin");   // (all of them, written whole)
+    if (FILE* f = path.empty() ? nullptr : fopen((path + ".tmp").c_str(), "wb")) {
+        const uint32_t count = (uint32_t)teleport_captures.size();
+        fwrite("FTP1", 1, 4, f), fwrite(&count, 4, 1, f);
+        for (const auto& [name, c] : teleport_captures) {
+            char n[48] = {};
+            strncpy(n, name.c_str(), sizeof n - 1);
+            const uint32_t wh[2] = {c.w, c.h};
+            fwrite(n, 1, 48, f), fwrite(wh, 4, 2, f), fwrite(c.rgba.data(), 1, c.rgba.size(), f);
+        }
+        const bool ok = !ferror(f);
+        fclose(f);
+        std::error_code ec;
+        if (ok) std::filesystem::rename(path + ".tmp", path, ec);   // (over the old one, on either platform)
+    }
+    logf("menu: Teleport screenshot of %s taken (%d in all)", oot_capture_maps[map], (int)teleport_captures.size());
+    snprintf(notice_text, sizeof notice_text, "Teleport picture saved");
+    notice_until.store(prof_now() + 2500000000LL, std::memory_order_relaxed);
+}
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
 bool scene_tonemap_on() { return dev.hdr && opts.hdr == 2 && opts.hdr_tonemap == 1; }
 // (the tools off on the Debug tab: flight, the free camera and heart protection put away; -1, heart protection never set, is the
@@ -4293,6 +4554,17 @@ bool fps_take(int64_t now, int64_t shown, int64_t game, int64_t* next, int64_t* 
 // inside menu_tick's frame on the same thread does not lock itself out
 std::recursive_mutex menu_mu;
 void menu_option_set(int id, int value) {
+    if (id == OOT_TP_MAP_ID) {
+        teleport_map_now.store(value, std::memory_order_relaxed);
+        return;
+    }
+    if (id == OOT_TP_CAPTURE_ID) {   // (Link has stayed in a map: its screenshot, when there is none yet and the menu is closed)
+        if (value < 0 || value >= OOT_CAPTURE_MAPS || open_now.load(std::memory_order_relaxed)) return;
+        read_teleport_pictures();
+        std::lock_guard lk(teleport_captures_mu);
+        if (!teleport_captures.count(oot_capture_maps[value])) teleport_capture_want.store(value, std::memory_order_relaxed);
+        return;
+    }
     if (id == OOT_CHEAT_AGE_ID) {   // (Link's age: the Switch age row shows it)
         if (link_age.exchange(value, std::memory_order_relaxed) != value && page == 0 && cur_tab == TAB_DEBUG) menu_refresh = true;
         return;
@@ -4553,6 +4825,7 @@ void cheat_press(int i, const bool* press, bool& changed) {
         changed = true;
     }
     if (press[7] && i == 8) page = 3, teleport_follow = true, changed = true;
+    if (press[7] && i == 13) retake_listening = 1, retake_armed = false, retake_help_now(), changed = true;   // (Retake picture)
     if (press[7] && i == 10) page = 4, choose_inventory_filter(0), changed = true;
     if (i == 9 && (press[3] || press[4])) {   // (Kid | Adult: Left Kid, Right Adult, a switch when Link is the other age)
         const int age = link_age.load(std::memory_order_relaxed);
@@ -4669,6 +4942,21 @@ void menu_tick() {
     const uint32_t raw = mine && host && host->pad_raw ? host->pad_raw() : 0, pad_press = raw & ~pad_held;
     const uint32_t chord = 1u << HOS_PAD_BACK | 1u << HOS_PAD_START;
     const bool chord_now = (raw & chord) == chord && (pad_held & chord) != chord;
+    {   // (the Retake picture button, in play: this map's screenshot again, at the next frame)
+        static bool key_held = false;
+        const int code = opts.retake_key;
+        bool now = false;
+        if (code < 0) now = (pad_press >> (-code - 1) & 1) != 0;
+        else if (code > 0) {
+            const bool down = mine && (GetAsyncKeyState(code) & 0x8000) != 0;
+            now = down && !key_held;
+            key_held = down;
+        }
+        if (now && !open_now.load()) {
+            const int map = teleport_map_now.load(std::memory_order_relaxed);
+            if (map >= 0) teleport_capture_want.store(map, std::memory_order_relaxed), logf("menu: Teleport screenshot retaken");
+        }
+    }
     pad_held = raw;
     if (pad_press) pad_last = true;   // (a controller: its buttons in the prompts)
 #ifndef VK_RSHIFT
@@ -4786,7 +5074,8 @@ void menu_tick() {
         open_now = !open_now.load(), changed = true;
         if (open_now.load()) tune_mode = tune_down;
         else tune_mode = false;
-        page = 0, listening = 0;
+        page = 0, listening = 0, retake_listening = 0;
+        retake_help_now();
         // (the layout row shows the controls as they are: host/nn_hid.c keeps them, the ini's pad_ lines, and a saved
         // layout is not applied over them at start)
         if (open_now.load()) opts.pad_layout = detect_pad_layout();
@@ -4809,6 +5098,41 @@ void menu_tick() {
             pipeline_cache_save(true);
             open_now = false, page = 0, tune_mode = false, changed = true;
             PostMessageA(app_window(), WM_APP + 9, 0, 0);
+        }
+    } else if (open_now.load() && retake_listening) {   // (Retake picture waits for its button: a key, a mouse button, a pad's)
+        int down = 0;
+        for (int k : bindable_keys())
+            if (mine && (GetAsyncKeyState(k) & 0x8000)) {
+                down = k;
+                break;
+            }
+        const bool del = mine && (GetAsyncKeyState(VK_DELETE) & 0x8000);
+        const uint32_t pads = raw & ~(1u << HOS_PAD_GUIDE);
+        if (!retake_armed) retake_armed = !down && !pads && !del && !press[5];
+        else if (press[5]) {   // (Esc, or the gamepad's back: cancelled)
+            retake_listening = 0, retake_help_now(), changed = true;
+        } else if (del) {   // (no button)
+            opts.retake_key = 0, retake_listening = 0, retake_help_now(), save(), changed = true;
+        } else {
+            int code = 0;
+            if (const uint32_t p = pad_press & ~(1u << HOS_PAD_GUIDE)) {
+                int bit = 0;
+                while (!(p >> bit & 1)) bit++;
+                code = -(bit + 1);
+            } else if (down) {
+                code = down;
+            }
+            if (code) {
+                if (const char* why = retake_conflict(code)) {   // (taken already: said, and still waiting)
+                    snprintf(retake_help, sizeof retake_help, "%s is already used for %s. Press another one, or Esc to cancel.",
+                             retake_name(code), why);
+                    retake_armed = false;
+                } else {
+                    opts.retake_key = code, retake_listening = 0, retake_help_now(), save();
+                    logf("menu: Retake picture button: %s", retake_name(code));
+                }
+                changed = true;
+            }
         }
     } else if (open_now.load() && page == 1) {   // (hookshot) the Controls page
         using enum menu_hit::CtlColumn;
@@ -5106,11 +5430,20 @@ void menu_tick() {
     }
 }
 
+/// A screenshot for the Teleport list saved: a line at the top of the game, for a moment, while the menu is closed
+void draw_notice(ui::Ctx& c) {
+    const float s = c.s, tw = ui::size_of(c.f.strong, 17 * s, notice_text).x;
+    const ImVec2 a(c.w * 0.5f - tw * 0.5f - 22 * s, c.safe + 14 * s), b(c.w * 0.5f + tw * 0.5f + 22 * s, c.safe + 54 * s);
+    ui::box(c, a, b);
+    ui::text_mid_centre(c, c.f.strong, 17 * s, c.w * 0.5f, (a.y + b.y) * 0.5f, ui::kGoldHi, notice_text);
+}
+
 void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     const bool start = startup_on.load(std::memory_order_acquire);
     const bool fps = opts.show_fps && !start;   // (no game frames yet: not "0 FPS" over the start-up screen)
     const bool open = open_now.load(std::memory_order_relaxed);
-    if (!start && !fps && !open) {   // (nothing shows: no ImGui frame, no render pass)
+    const bool notice = !open && notice_until.load(std::memory_order_relaxed) > prof_now();
+    if (!start && !fps && !open && !notice) {   // (nothing shows: no ImGui frame, no render pass)
         // (but a new window size or Menu size since the last bake: one frame with nothing drawn that bakes the menu's glyphs
         // and measures its page for the new size, so the next open has no hitch whatever was resized while nothing showed)
         if (prebake_needed(w, h) && ui::begin(w, h)) {
@@ -5135,6 +5468,7 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     if (start) draw_startup(c);   // (under the menu)
     if (open) draw_menu(c);
     if (fps) draw_fps(c, open);
+    if (notice) draw_notice(c);
     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
     ui::record(cmd, index, w, h);
 }
