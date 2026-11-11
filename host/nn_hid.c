@@ -1117,7 +1117,7 @@ static void npad_states(Ctx *c) {
         __atomic_store_n(&free_camera_axes, axes, __ATOMIC_RELAXED);
         __atomic_store_n(&free_camera_height, height, __ATOMIC_RELAXED);
     }
-    uint64_t hos_wheel_input(uint64_t buttons, int32_t stick[4]);   /* oot_wheel.c (wheel mod): the item wheel's stick and taps */
+    uint64_t hos_wheel_input(uint64_t buttons, int32_t stick[4]);   /* oot_wheel.c (hookshot): the item wheel's stick and taps */
     if (connected) buttons = hos_wheel_input(buttons, stick);
     uint64_t hos_title_input(uint64_t buttons);   /* totk_title.c: the title menu's credits entries */
     if (connected) buttons = hos_title_input(buttons);

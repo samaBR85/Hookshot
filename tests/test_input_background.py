@@ -94,7 +94,7 @@ static void player_used(void) {}
     glue = (ROOT / "host/mkw_glue.c").read_text(encoding="utf-8")
     actual += "\n" + "\n".join(block(glue, "uint64_t " + name + "(")
                                   for name in ("hos_title_input", "hos_frame_step_buttons"))
-    actual += "\nuint64_t hos_wheel_input(uint64_t buttons, int32_t stick[4]) { (void)stick; return buttons; }   /* (wheel mod: host/oot_wheel.c) */\n"
+    actual += "\nuint64_t hos_wheel_input(uint64_t buttons, int32_t stick[4]) { (void)stick; return buttons; }   /* (hookshot: host/oot_wheel.c) */\n"
     env = os.environ.copy()
     for name in list(env):
         if name.startswith("HOS_INPUT_") or name in ("HOS_HEADLESS", "HOS_WINDOW_NOACTIVATE"):

@@ -45,7 +45,7 @@
 #include "upscaler_rows.h"
 #include "pcache_stamp.h"
 #include "vk_reactive.h"   // (the upscalers' reactive mask: the scene copied before its transparent draws)
-#include "vk_framegen.h"      // (wheel mod: the gameplay upscale's output, for frame interpolation's HUD)
+#include "vk_framegen.h"      // (hookshot: the gameplay upscale's output, for the item wheel's backdrop)
 #include "vk_dump.h"
 #include "vk_gprof.h"
 #include "vk_jobs.h"
@@ -7877,10 +7877,11 @@ static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture
     return true;
 }
 
-/// (wheel mod) After the gameplay upscale wrote its output (the game's network, or DLSS or FSR 3.1 in its place: stood_in):
-/// that picture before the game draws its HUD on it, to frame interpolation (vk_framegen.h framegen_hudless)
-void hudless_note(VkCommandBuffer cmd, const NvnState& s, const Program& p, bool stood_in) {
-    if (p.stages.empty() || (!stood_in && !gameplay_network(p.key))) return;   // (framegen_hudless: whether it is wanted)
+/// (hookshot) After the gameplay upscale wrote its output (the game's network, or DLSS or FSR 3.1 in its place: stood_in),
+/// with the Item wheel row on: that picture before the game draws its HUD on it, the wheel's backdrop
+/// (vk_framegen.h framegen_wheel_scene). With the row off (the default) it returns at once
+void wheel_scene_note(VkCommandBuffer cmd, const NvnState& s, const Program& p, bool stood_in) {
+    if (!framegen_wheel_on() || p.stages.empty() || (!stood_in && !gameplay_network(p.key))) return;
     const Stage& st = p.stages[0];
     if (st.info.image_descriptors.empty()) return;
     const auto& od = st.info.image_descriptors[0];
@@ -7890,8 +7891,8 @@ void hudless_note(VkCommandBuffer cmd, const NvnState& s, const Program& p, bool
     if (handle) texture_view_of(handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
     if (!out || !out->image || !(out->aspect & VK_IMAGE_ASPECT_COLOR_BIT) || out->samples != VK_SAMPLE_COUNT_1_BIT) return;
     level = std::min(level, out->levels - 1);
-    framegen_hudless(cmd, out->image, out->format, std::max(1u, out->width >> level), std::max(1u, out->height >> level),
-                     level);
+    framegen_wheel_scene(cmd, out->image, out->format, std::max(1u, out->width >> level), std::max(1u, out->height >> level),
+                         level);
 }
 bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
     if (!taau_key(p.key) || !dev.push_descriptor || !vkCmdPushDescriptorSetKHR || p.stages.empty()) return false;
@@ -9336,9 +9337,9 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             logf("%s", line);
         }
     }
-    if (fsr3_stand_in(cmd, s, p)) return hudless_note(cmd, s, p, true), void(st_dispatches++);
-    if (temporal_stand_in(cmd, s, p)) return hudless_note(cmd, s, p, true), void(st_dispatches++);
-    if (taau_stand_in(cmd, s, p)) return hudless_note(cmd, s, p, true), void(st_dispatches++);   // (wheel mod: hudless_note)
+    if (fsr3_stand_in(cmd, s, p)) return wheel_scene_note(cmd, s, p, true), void(st_dispatches++);
+    if (temporal_stand_in(cmd, s, p)) return wheel_scene_note(cmd, s, p, true), void(st_dispatches++);
+    if (taau_stand_in(cmd, s, p)) return wheel_scene_note(cmd, s, p, true), void(st_dispatches++);   // (hookshot: wheel_scene_note)
     if (!p.compute_pipeline) SKIP_HERE();
     dump_ssbos(cmd, p, "before");
     if (!p.dispatched.load(std::memory_order_relaxed)) compute_variant_note(p.key, p.variant);   // (which variant: this install's own)
@@ -9418,7 +9419,7 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
             vkCmdDispatch(cmd, x, y, z);
         }
     }
-    hudless_note(cmd, s, p, false);   // (wheel mod: the game's own gameplay upscale)
+    wheel_scene_note(cmd, s, p, false);   // (hookshot: the game's own gameplay upscale, for the item wheel)
     if (dump_on() && dump_ssbo_wanted(p.key)) dump_ssbos(cmd, p, "after");
     if (gprof_on()) {
         char label[96];

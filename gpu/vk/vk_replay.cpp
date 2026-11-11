@@ -42,7 +42,7 @@
 #include "vk_dlss.h"   // (hookshot: dlss_fg_idle)
 #include "vk_fps.h"
 #include "vk_menu.h"
-#include "oot_cheat_items.h"   // (wheel mod: OOT_CHEAT_ITEM_BASE, the item wheel's counts)
+#include "oot_cheat_items.h"   // (hookshot: OOT_CHEAT_ITEM_BASE, the item wheel's counts)
 #include "vk_jobs.h"
 #include "vk_shader.h"
 #include "vk_state.h"
@@ -3478,7 +3478,7 @@ void do_present(const nvn_tex* t, const int crop[4]) {
                                                                                         : "the SDR picture expanded to HDR10");
             }
         }
-        // (wheel mod) the item wheel open: the game's picture covered with its scene before the HUD, dimmed (the game's
+        // (hookshot) the item wheel open: the game's picture covered with its scene before the HUD, dimmed (the game's
         // own item row, its hints and the HUD gone from behind the wheel; before frame interpolation and the shots read it)
         if (tex) framegen_wheel_backdrop(r.cmd, tex->image, tex->format, sw, sh, crop);
         if (tex && !dev.offscreen && (opts.upscale || opts.sharpness || dev.hdr || wide_sides_possible())) {   // (and ultrawide's menu sides)

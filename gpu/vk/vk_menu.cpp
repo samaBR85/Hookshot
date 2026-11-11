@@ -36,7 +36,7 @@
 #include "oot_cheat_items.h"
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
 #include "vk_ui.h"
-#include "imgui_internal.h"   // (wheel mod: RegisterUserTexture, the item wheel's icons)
+#include "imgui_internal.h"   // (hookshot: RegisterUserTexture, the item wheel's icons)
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
 #include "vk_dlss.h"
 #include "vk_framegen.h"   // (Frame generation by: who makes the frames now, framegen_maker)
@@ -4263,7 +4263,7 @@ int menu_player_flight() { return cheats_on() ? player_flight.load(std::memory_o
 int menu_free_camera() { return cheats_on() ? free_camera.load(std::memory_order_relaxed) : 0; }
 int menu_link_speed() { return cheats_on() ? link_speeds[std::clamp(link_speed.load(std::memory_order_relaxed), 0, kLinkSpeeds - 1)] : 100; }
 int menu_take_cheat_action() { return cheat_action.exchange(0, std::memory_order_relaxed); }
-// (wheel mod) an inventory count the game side reported (OOT_CHEAT_ITEM_BASE + i), for the item wheel's numbers
+// (hookshot) an inventory count the game side reported (OOT_CHEAT_ITEM_BASE + i), for the item wheel's numbers
 int menu_item_count(int i) { return i >= 0 && i < kItems ? item_counts[i].load(std::memory_order_relaxed) : -1; }
 
 void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t window_w, uint32_t window_h) {
@@ -4615,7 +4615,7 @@ void cheat_press(int i, const bool* press, bool& changed) {
         changed = true;
     }
 }
-// ---- (wheel mod) the R button's item wheel (host/oot_wheel.c, host->wheel): the items in a ring round the screen's
+// ---- (hookshot) the R button's item wheel (host/oot_wheel.c, host->wheel): the items in a ring round the screen's
 // centre, the first at the top and the rest clockwise; the row's cursor in gold, the item the stick points at ringed in
 // white, the chosen item's icon in the middle and its name on a banner under the ring. Drawn on Dear ImGui's draw lists
 // under the Insert menu and the FPS counter (menu_record), the game's item icons from one texture (wheel_icons_load) ----
@@ -4663,11 +4663,11 @@ static ImVec2 wheel_slot_at(int i, int n, ImVec2 c, float ring_r, float inner_r)
     return ImVec2(c.x + (float)(std::sin(a) * r), c.y - (float)(std::cos(a) * r));
 }
 
-// The game's item icons, wheel/icons.bin in the game folder (nx2/wheel_icons.py makes it from the user's RomFS at every
-// build: "HWIC", u32 version 1, u32 count, u32 size, then each icon's char name[48] and size*size RGBA, straight alpha), read
-// the first time the wheel shows into one texture: a grid of cells a pixel wider than the icon on each side, the see-through
-// pixels given their opaque neighbours' colour, so the filtering at the icons' edges does not darken them. None (no file):
-// the slots show the items' names instead
+// The game's item icons, wheel/icons.bin in the game folder (nx2/prompt_assets.py --wheel-icons makes it from the
+// user's RomFS at every build: "HWIC", u32 version 1, u32 count, u32 size, then each icon's char name[48] and size*size
+// RGBA, straight alpha), read the first time the wheel shows into one texture: a grid of cells a pixel wider than the
+// icon on each side, the see-through pixels given their opaque neighbours' colour, so the filtering at the icons' edges
+// does not darken them. None (no file): the slots show the items' names instead
 struct WheelIcon {
     char name[48];
     int cell;
@@ -5426,7 +5426,7 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     const bool start = startup_on.load(std::memory_order_acquire);
     const bool fps = opts.show_fps && !start;   // (no game frames yet: not "0 FPS" over the start-up screen)
     const bool open = open_now.load(std::memory_order_relaxed);
-    const bool wheel = wheel_update() && !start;   // (wheel mod: the item wheel open)
+    const bool wheel = wheel_update() && !start;   // (hookshot: the item wheel open)
     if (!start && !fps && !open && !wheel) {   // (nothing shows: no ImGui frame, no render pass)
         // (but a new window size or Menu size since the last bake: one frame with nothing drawn that bakes the menu's glyphs
         // and measures its page for the new size, so the next open has no hitch whatever was resized while nothing showed)
@@ -5450,7 +5450,7 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     ui::Ctx c = ui_ctx(w, h);
     prebake(c);   // (the menu's glyphs at this size, before it opens: no hitch then)
     if (start) draw_startup(c);   // (under the menu)
-    if (wheel) draw_wheel(c);     // (wheel mod: under the menu and the counter)
+    if (wheel) draw_wheel(c);     // (hookshot: under the menu and the counter)
     if (open) draw_menu(c);
     if (fps) draw_fps(c, open);
     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
@@ -5460,7 +5460,7 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
 void menu_record_image(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h) {
     const bool open = open_now.load(std::memory_order_relaxed);
     const bool fps = opts.show_fps && !startup_on.load(std::memory_order_acquire);
-    const bool wheel = wheel_update() && !startup_on.load(std::memory_order_relaxed);   // (wheel mod)
+    const bool wheel = wheel_update() && !startup_on.load(std::memory_order_relaxed);   // (hookshot)
     if (!open && !fps && !wheel) return;
     if (!ui::begin(w, h)) return;
     ui::Ctx c = ui_ctx(w, h);

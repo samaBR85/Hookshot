@@ -1,4 +1,4 @@
-/* (wheel mod) The R button's item choice as a wheel, Twilight Princess style.
+/* (hookshot) The R button's item choice as a wheel, Twilight Princess style (the Gameplay tab's Item wheel row).
 
    f_802f1380 is every menu screen's update (each frame, with the screen in x0; nx2/oot_patches.py has it call
    host/oot_menu.c's hos_oot_menu_tick first, which calls hos_wheel_menu_tick here first). The R item row's screen has the vtable
@@ -11,7 +11,7 @@
    shown, the row turns with it too); the row is turned there with D-pad taps (60 ms down, 60 up, as main's mouse wheel
    does), and R is kept held for the game until it gets there, so letting go of R early still equips the item pointed at.
 
-   HOS_WHEEL_PROBE=1: the probe that found the above (logs the row's memory as it changes), on top. */
+   HOS_ITEM_WHEEL=0 or 1: the row's setting overridden. HOS_WHEEL_TRACE=1: the openings, the taps and R kept held, logged. */
 #include "hos.h"
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/compat/hookshot_env.h"
@@ -22,7 +22,6 @@
 #include <string.h>
 
 #define ITEM_CHOICE_VTABLE 0x84c0d430ULL
-#define SCAN_BYTES 0x800
 #define ROW_PANES 10
 #define WHEEL_PI 3.14159265358979323846
 
@@ -60,141 +59,6 @@ static int ident_at(uint64_t a, char *buf, size_t cap) {
 }
 
 /* ---------------------------------------------------------------------------------------------------------------- */
-/* the probe (HOS_WHEEL_PROBE=1)                                                                                     */
-
-static int interesting(const char *s) {
-    static const char *const keys[] = {"Item_", "Weapon_", "Armor_", "Pouch", "Obj_", "Bottle", "Mask"};
-    for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++)
-        if (strstr(s, keys[i])) return 1;
-    return 0;
-}
-
-/* every identifier string reachable from the screen, by pointers at most depth deep (breadth first, nodes visited once) */
-#define MAX_NODES 6000
-static uint64_t node_addr[MAX_NODES];
-static int node_parent[MAX_NODES], node_off[MAX_NODES];
-static void path_of(int n, char *out, size_t cap) {
-    int chain[8], k = 0;
-    for (int i = n; i > 0 && k < 8; i = node_parent[i]) chain[k++] = i;
-    size_t at = (size_t)snprintf(out, cap, "screen");
-    while (k-- > 0 && at < cap) at += (size_t)snprintf(out + at, cap - at, "->+%#x", node_off[chain[k]]);
-}
-#define SEEN_SLOTS 32768
-static uint64_t seen_set[SEEN_SLOTS];
-static int seen_add(uint64_t p) {   /* 1 when p was in the set already */
-    uint32_t h = (uint32_t)((p >> 3) * 0x9E3779B1u) & (SEEN_SLOTS - 1);
-    for (int i = 0; i < SEEN_SLOTS; i++, h = (h + 1) & (SEEN_SLOTS - 1)) {
-        if (seen_set[h] == p) return 1;
-        if (!seen_set[h]) { seen_set[h] = p; return 0; }
-    }
-    return 1;
-}
-static void find_strings(uint64_t screen) {
-    memset(seen_set, 0, sizeof seen_set);
-    seen_add(screen);
-    int count = 1, found = 0;
-    node_addr[0] = screen, node_parent[0] = -1, node_off[0] = 0;
-    int depth_end[5] = {1}, depth = 0;
-    for (int n = 0; n < count && found < 400; n++) {
-        if (n == depth_end[depth]) {
-            if (++depth >= 4) break;
-            depth_end[depth] = count;
-        }
-        const int span = n == 0 ? SCAN_BYTES : 0x200;
-        for (int off = 0; off < span && found < 400; off += 8) {
-            const uint64_t p = peek64(node_addr[n] + off);
-            if (!valid(p, 64)) continue;
-            char s[64];
-            if (ident_at(p, s, sizeof s)) {
-                if (interesting(s) || n == 0) {
-                    char path[160];
-                    path_of(n, path, sizeof path);
-                    hos_log("wheel: string %s->+%#x = \"%s\"", path, off, s);
-                    found++;
-                }
-                continue;
-            }
-            if (!seen_add(p) && count < MAX_NODES) {
-                node_addr[count] = p, node_parent[count] = n, node_off[count] = off;
-                count++;
-                depth_end[depth + 1] = count;
-            }
-        }
-    }
-    hos_log("wheel: %d strings found, %d objects looked at", found, count);
-}
-
-static void dump_region(const char *name, uint64_t a, int bytes) {
-    for (int off = 0; off < bytes; off += 32) {
-        uint64_t q[4] = {0};
-        if (!peek(a + off, q, sizeof q)) return;
-        hos_log("wheel: %s+%03x: %016llx %016llx %016llx %016llx", name, off, (unsigned long long)q[0], (unsigned long long)q[1],
-                (unsigned long long)q[2], (unsigned long long)q[3]);
-    }
-}
-
-/* the entries of the array: each one's name (+0x88) and its first words */
-static void dump_entries(uint64_t arr) {
-    for (int i = 0; i < 32; i++) {
-        const uint64_t e = peek64(arr + 8 * (uint64_t)i);
-        if (!valid(e, 0x200)) continue;
-        char n1[64] = "-";
-        if (!ident_at(peek64(e + 0x88), n1, sizeof n1)) strcpy(n1, "-");
-        hos_log("wheel: array[%d] = %#llx: +0x88 \"%s\"", i, (unsigned long long)e, n1);
-    }
-}
-
-/* the regions watched for changes: the screen, the list node at screen+0x40 and the array at node+0x60 */
-enum { REGIONS = 3 };
-static const char *const region_name[REGIONS] = {"screen", "node", "array"};
-static const int region_bytes[REGIONS] = {SCAN_BYTES, 0x200, 0x100};
-static uint32_t last_words[REGIONS][SCAN_BYTES / 4];
-static uint8_t changed_last[REGIONS][SCAN_BYTES / 4];
-static uint64_t region_at[REGIONS];
-static int lines_this_open;
-static unsigned probe_frame;
-
-static void item_choice_probe(uint64_t screen, int opened) {
-    uint64_t at[REGIONS];
-    at[0] = screen;
-    at[1] = peek64(screen + 0x40);
-    at[2] = at[1] ? peek64(at[1] + 0x60) : 0;
-    if (opened) {
-        lines_this_open = 0, probe_frame = 0;
-        hos_log("wheel: the item choice opened (screen %#llx, node %#llx, array %#llx)", (unsigned long long)at[0],
-                (unsigned long long)at[1], (unsigned long long)at[2]);
-        dump_region("screen", screen, 0x300);
-        dump_region("node", at[1], 0x100);
-        dump_entries(at[2]);
-        if (env_on("HOS_WHEEL_SCAN")) find_strings(screen);
-    } else {
-        probe_frame++;
-    }
-    for (int r = 0; r < REGIONS; r++) {
-        uint32_t words[SCAN_BYTES / 4];
-        const int n = region_bytes[r] / 4;
-        if (!at[r] || !peek(at[r], words, (size_t)n * 4)) continue;
-        if (opened || at[r] != region_at[r]) {
-            if (!opened) hos_log("wheel: f%u the %s moved to %#llx", probe_frame, region_name[r], (unsigned long long)at[r]);
-            region_at[r] = at[r];
-            memcpy(last_words[r], words, (size_t)n * 4);
-            memset(changed_last[r], 0, (size_t)n);
-            continue;
-        }
-        for (int i = 0; i < n; i++) {
-            const int changed = words[i] != last_words[r][i];
-            if (changed && !changed_last[r][i] && lines_this_open < 400) {
-                hos_log("wheel: f%u %s+%#05x %08x -> %08x (%d)", probe_frame, region_name[r], i * 4, last_words[r][i], words[i],
-                        (int)words[i]);
-                lines_this_open++;
-            }
-            changed_last[r][i] = (uint8_t)changed;
-        }
-        memcpy(last_words[r], words, (size_t)n * 4);
-    }
-}
-
-/* ---------------------------------------------------------------------------------------------------------------- */
 /* the wheel                                                                                                         */
 
 /* what the player reads for a game name: the debug inventory's labels (gpu/vk/oot_cheat_items.h), else the name
@@ -224,6 +88,7 @@ static void label_of(const char *name, char *out, size_t cap) {
 
 /* shared with the input thread (hos_wheel_input) */
 static volatile int64_t row_tick_ns;    /* the row's last update */
+static volatile int64_t other_tick_ns;  /* any other screen's last update (the HUD's, a text box's, the pause menu's) */
 static volatile int row_count;          /* its items */
 static volatile int row_cursor = -1;    /* its cursor */
 static volatile int wheel_target = -1;  /* the item the stick pointed at last this opening, -1 none yet */
@@ -257,6 +122,14 @@ static int amount_of(const char *name) {
 
 #define ROW_OPEN_NS 100000000LL    /* the row counts as shown until 100 ms after its last update */
 #define ROW_STALL_NS 500000000LL   /* ... or 500 ms while R is held (a game stall is not a close) */
+#define ROW_GONE_NS 60000000LL     /* ... unless other screens went on updating 60 ms without it: closed (row_gone) */
+
+/* The row is gone though its last update is recent: the game went on (its other screens updated) for ROW_GONE_NS without
+   it, so the game closed it (a text box, a cutscene, damage), not a stall (where nothing updates). The synthetic R and
+   D-pad taps stop then, rather than after ROW_STALL_NS, so they never reach play for more than a frame or two */
+static int row_gone(int64_t last) {
+    return last && __atomic_load_n(&other_tick_ns, __ATOMIC_ACQUIRE) - last > ROW_GONE_NS;
+}
 
 static int wheel_trace(void) {   /* HOS_WHEEL_TRACE=1: the openings, the taps, R kept held */
     static int on = -1;
@@ -281,7 +154,8 @@ static void publish(const MkwVkWheel *next) {
 
 const MkwVkWheel *hos_wheel_state(void) {
     /* (the row stopped updating: closed. Its own update cannot say so, so the renderer's call does) */
-    if (wheel_state.open && hos_now_ns() - __atomic_load_n(&row_tick_ns, __ATOMIC_ACQUIRE) > ROW_OPEN_NS &&
+    const int64_t last = __atomic_load_n(&row_tick_ns, __ATOMIC_ACQUIRE);
+    if (wheel_state.open && (hos_now_ns() - last > ROW_OPEN_NS || row_gone(last)) &&
         !__atomic_exchange_n(&state_lock, 1, __ATOMIC_ACQUIRE)) {
         MkwVkWheel next = wheel_state;
         next.open = 0, next.pick = -1;
@@ -426,8 +300,7 @@ static int slot_under(int32_t px, int32_t py, int32_t w, int32_t h, int count) {
 /* The survey: the row loads only about 4 items behind its cursor to 5 ahead, so a wheel opened on part of it has slots it
    cannot name yet. Hidden behind the wheel's backdrop, the row is turned (the same taps) to the nearest stop that loads
    an unseen item, then back to the item it opened on (home), while the player has picked nothing and holds R; a pick
-   takes over at once, and R let go first goes home before the game sees it. 3 s at most an opening. HOS_WHEEL_SURVEY=0:
-   off. The stop for the nearest unseen item (a margin of one inside the window), the cursor itself while one is in the
+   takes over at once, and R let go first goes home before the game sees it. 3 s at most an opening. The stop for the nearest unseen item (a margin of one inside the window), the cursor itself while one is in the
    window but not loaded yet, -1 when all are seen */
 static int survey_stop(int cursor, int count, uint32_t known) {
     int best = -1, best_d = 1 << 30;
@@ -441,17 +314,11 @@ static int survey_stop(int cursor, int count, uint32_t known) {
     }
     return best;
 }
-static int survey_on(void) {
-    static int on = -1;
-    if (on < 0) {
-        on = env_int("HOS_WHEEL_SURVEY", 1) != 0;   /* (on unless set to 0) */
-    }
-    return on;
-}
 
 /* The game's controller state, before the game sees it (nn_hid.c npad_states). While the row is shown: the left stick
    is the wheel's (the game's row would turn with it), the D-pad gets the taps that turn the row to the item the stick
-   pointed at, and R stays held until the row is there (at most 1.5 s after the player let go).
+   pointed at, and R stays held until the row is there (at most 4 s after the player let go, and only while the row is
+   shown: the game closing it ends the R and the taps at once, row_gone).
    The mouse (host/display.c): while the wheel is open it is let go and its pointer shown. Moved, the item under it is
    the pick as the stick's is (until the stick is pushed again); a left click on an item picks it and closes the wheel
    (R let go for the game however it is held, and kept from it until the player lets go of it too). */
@@ -483,9 +350,14 @@ uint64_t hos_wheel_input(uint64_t buttons, int32_t stick[4]) {
     /* (shown: updated within 100 ms; while R is held, the game's or ours, within 500 ms: the game stalled for 157 ms
        while the row was open, and taking that for a close dropped the target, so a let-go R equipped whatever the row
        was passing) */
-    const int open = last && (now - last < ROW_OPEN_NS || (r_kept && now - last < ROW_STALL_NS));
+    const int open = last && !row_gone(last) && (now - last < ROW_OPEN_NS || (r_kept && now - last < ROW_STALL_NS));
     const int opening = __atomic_load_n(&wheel_opening, __ATOMIC_ACQUIRE);
-    if (open != was_open) was_open = open, hos_wheel_mouse_open(open);
+    if (open != was_open) {
+        if (!open && wheel_trace())
+            hos_log("wheel: the row closes (%s; R %s)", row_gone(last) ? "the game went on without it" : "no update",
+                    r_kept ? "kept held: let go now" : "the player's");
+        was_open = open, hos_wheel_mouse_open(open);
+    }
     int32_t mx = 0, my = 0, mw = 0, mh = 0, cx = 0, cy = 0;
     int clicked = 0;
     const int mouse_ok = hos_wheel_pointer(&mx, &my, &mw, &mh, &clicked, &cx, &cy);
@@ -552,7 +424,7 @@ uint64_t hos_wheel_input(uint64_t buttons, int32_t stick[4]) {
     /* where the taps go: the pick; with none, the survey's next stop while it runs, else home */
     int aim = target;
     if (target < 0 && home >= 0) {
-        const int stop = survey_on() && settled_in && r_pressed && !click_close && now < survey_until
+        const int stop = settled_in && r_pressed && !click_close && now < survey_until
                              ? survey_stop(cursor, count, __atomic_load_n(&row_known, __ATOMIC_ACQUIRE))
                              : -1;
         aim = stop >= 0 ? stop : home;
@@ -590,8 +462,6 @@ uint64_t hos_wheel_input(uint64_t buttons, int32_t stick[4]) {
 
 /* ---------------------------------------------------------------------------------------------------------------- */
 
-static int probe_on = -1;
-
 /* The Gameplay tab's Item wheel row (off by default; HOS_ITEM_WHEEL=0 or 1 overrides it). Off, the row's updates are not
    taken: the wheel stays closed, so the controls, the row's sounds and the picture are the game's own. Read each update,
    so a change applies at once (an open wheel closes with the row's next update) */
@@ -612,21 +482,9 @@ int hos_wheel_menu_tick(Ctx *c, uint64_t screen_arg) {
     const uint64_t screen = screen_arg;
     const uint64_t vt = peek64(screen);
     const int mine = vt == ITEM_CHOICE_VTABLE && wheel_enabled();
+    if (vt != ITEM_CHOICE_VTABLE) __atomic_store_n(&other_tick_ns, hos_now_ns(), __ATOMIC_RELEASE);   /* (row_gone) */
     /* (the screens update on several worker threads at once: one at a time here, the others skip this frame) */
     if (__atomic_exchange_n(&state_lock, 1, __ATOMIC_ACQUIRE)) return mine;
-    if (probe_on < 0) {
-        probe_on = env_on("HOS_WHEEL_PROBE");
-    }
-    if (probe_on) {
-        static uint64_t vts[64];
-        static int nvts;
-        int known = 0;
-        for (int i = 0; i < nvts && !known; i++) known = vts[i] == vt;
-        if (!known && nvts < 64) {
-            vts[nvts++] = vt;
-            hos_log("wheel: a screen of vtable %#llx updates (screen %#llx)", (unsigned long long)vt, (unsigned long long)screen);
-        }
-    }
     if (mine) {
         static uint64_t open_screen;
         const int64_t now = hos_now_ns();
@@ -638,7 +496,6 @@ int hos_wheel_menu_tick(Ctx *c, uint64_t screen_arg) {
         open_screen = screen;
         __atomic_store_n(&row_tick_ns, now, __ATOMIC_RELEASE);
         wheel_tick(screen, opened);
-        if (probe_on) item_choice_probe(screen, opened);
     }
     __atomic_store_n(&state_lock, 0, __ATOMIC_RELEASE);
     return mine;

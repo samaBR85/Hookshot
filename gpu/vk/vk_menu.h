@@ -91,7 +91,7 @@ struct Options {
     // and its mirrors (vram_mb, mirror_mb come from it). A preset sets it; set on the row it is the player's (budget 0)
     int vram_budget = 0;
     int audio_output = 0; // (hookshot) the speakers the game mixes for: 0 Auto (the default output's), 1 Stereo, 2 5.1; read once, at the start (host/nn_audio.c; HOS_AUDIO_CHANNELS)
-    int item_wheel = 0;   // (wheel mod) holding R or L shows the items as a wheel (host/oot_wheel.c): 0 the game's own row
+    int item_wheel = 0;   // (hookshot) holding R or L shows the items as a wheel (host/oot_wheel.c): 0 the game's own row
     int discord = 1;   // (hookshot) the Discord status (host/discord_rpc.c): 1 on, shown while a Discord client runs on this PC
     int debug_tools = 0;   // (hookshot) the Debug tab's tools (#785: flight, free camera, teleport, inventory): 0 off; HOS_OOT_CHEATS=1 also turns them on
     int volume = 100;     // (hookshot) the game's sound in percent, 0 to 100 (host/nn_audio.c: HOS_OPT_VOLUME, 27)
@@ -131,7 +131,7 @@ int menu_player_flight();
 int menu_free_camera();
 int menu_link_speed();   // (Movement speed in percent, 100 while the tools are off)
 int menu_take_cheat_action();
-int menu_item_count(int i);   // (wheel mod: OOT_CHEAT_ITEM_BASE + i reads it back)
+int menu_item_count(int i);   // (hookshot: OOT_CHEAT_ITEM_BASE + i reads it back)
 void menu_note_frame(bool game_frame, int shown = 1);   // (the frame rates the FPS counter shows)
 /// The game's picture's size (the Output resolution, its crop) and the window's, at each present: the Window scaling filter
 /// row says when it is not needed

@@ -61,7 +61,7 @@ void hos_mic_select(int mode, const char *name, int index);
 void hos_bind(int set, int button, int slot, int code);
 int hos_prompts_face(void);         /* prompts.c */
 int hos_prompts_live_parts(void);   /* prompts.c */
-const MkwVkWheel *hos_wheel_state(void);   /* oot_wheel.c (wheel mod) */
+const MkwVkWheel *hos_wheel_state(void);   /* oot_wheel.c (hookshot) */
 #if defined(A64_WRITE_TRACK) && !defined(__EMSCRIPTEN__)
 void hos_mark_written(const void *p, size_t n);
 #endif

@@ -260,7 +260,7 @@ static void game_menu_press(LPARAM lp, LONG bit) {
     gm_mouse_used();
     pointer_publish_at(hwnd, at, (uint32_t)bit, 0);
 }
-/* (wheel mod) The item wheel (host/oot_wheel.c) for the mouse: while it is open the mouse is free and its pointer shown,
+/* (hookshot) The item wheel (host/oot_wheel.c) for the mouse: while it is open the mouse is free and its pointer shown,
    put in the wheel's middle as it opens; the item under it is picked, and a left click picks it and closes the wheel.
    The capture it had comes back when the wheel closes. The input thread posts WM_APP + 20 (wParam 1 open, 0 closed) */
 static volatile LONG wheel_click, wheel_click_x, wheel_click_y;
@@ -355,7 +355,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_APP + 10:   /* (a game menu opened: hos_mouse_game_menu) */
         if (!game_menu_open) menus_mouse(w, menu_open, 1);
         return 0;
-    case WM_APP + 20:   /* (wheel mod: the item wheel opened or closed, hos_wheel_mouse_open) */
+    case WM_APP + 20:   /* (hookshot: the item wheel opened or closed, hos_wheel_mouse_open) */
         wheel_mouse(w, (int)wp);
         return 0;
     case WM_APP + 11:   /* (the game's menus closed: hos_mouse_game_menu_gone) */
@@ -402,7 +402,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_LBUTTONDOWN:
         if (menu_open) menu_press(w, lp, HOS_MOUSE_LEFT);
-        else if (wheel_open_now) {   /* (wheel mod: the wheel's click, not a capture) */
+        else if (wheel_open_now) {   /* (hookshot: the wheel's click, not a capture) */
             InterlockedExchange(&wheel_click_x, (short)LOWORD(lp)), InterlockedExchange(&wheel_click_y, (short)HIWORD(lp));
             InterlockedExchange(&wheel_click, 1);
         } else if (game_menu_open) game_menu_press(lp, HOS_MOUSE_LEFT);

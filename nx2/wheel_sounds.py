@@ -1,4 +1,4 @@
-"""(wheel mod) The item wheel's sounds: the item row's own UI sounds (Sound/Resource/UI_Static.Product.111.bars.zs, the
+"""(hookshot) The item wheel's sounds: the item row's own UI sounds (Sound/Resource/UI_Static.Product.111.bars.zs, the
 "ShortCut" entries), decoded from DSP-ADPCM to 16-bit PCM and written to one file the host reads (host/oot_wheel.c, mixed
 in by host/nn_audio.c). make_game.py runs it at the end of every build. It stays on this PC, made from the user's RomFS like the icons.
 

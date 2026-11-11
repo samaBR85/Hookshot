@@ -955,6 +955,54 @@ def dump(out, face, b, tex, layers):
             decode(b, tex[layer.texture]).save(game)
 
 
+def write_wheel_icons(romfs, dictionary, out, size=128):
+    """(hookshot) The item wheel's icons (gpu/vk/vk_menu.cpp, the Gameplay tab's Item wheel row): the game's own item icons
+    (UI/Tex/Icon/<item name>.bntx.zs), decoded as the prompts' textures are, scaled to size x size and written to one file.
+    Here, not in a script of its own, so Pillow and the texture decoders stay in this file (CONTRIBUTING.md). Its own run
+    (--wheel-icons, nx2/make_game.py at every build), not part of make_prompts: the prompts' reuse covers the prompts alone.
+
+    out: "HWIC", u32 version 1, u32 count, u32 size; then for each icon: char name[48] (NUL-padded game name), size*size
+    RGBA pixels, straight alpha, rows top down. Returns the icons written."""
+    from PIL import Image
+    folder = os.path.join(romfs, "UI", "Tex", "Icon")
+    icons = []
+    for f in sorted(os.listdir(folder)):
+        if not f.endswith(".bntx.zs"):
+            continue
+        name = f[:-len(".bntx.zs")]
+        b = read_zs(romfs, os.path.join("UI", "Tex", "Icon", f), dictionary)
+        tex = bntx_textures(b)
+        if not tex:
+            print(f"wheel icons: {name} has no texture", file=sys.stderr)
+            continue
+        t = next(iter(tex.values()))
+        try:
+            im = decode(b, t).convert("RGBA")
+        except Exception as e:   # (a format the prompts' decoder does not know)
+            print(f"wheel icons: {name}: format {t[1]:#x} {t[2]}x{t[3]} not decoded ({e})", file=sys.stderr)
+            continue
+        icons.append((name, im.resize((size, size), Image.LANCZOS).tobytes()))
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "wb") as f:
+        f.write(b"HWIC" + struct.pack("<III", 1, len(icons), size))
+        for name, px in icons:
+            f.write(name.encode()[:47].ljust(48, b"\0") + px)
+    print(f"wheel icons: {len(icons)} icons at {size} px in {out}", file=sys.stderr)
+    return len(icons)
+
+
+def wheel_icons(a):
+    """(hookshot) --wheel-icons: the icons alone; 1 (and no file) when they could not be made, so the wheel shows names."""
+    try:
+        write_wheel_icons(a.romfs, zs_dictionary(a.romfs), a.wheel_icons)
+    except Exception as e:   # (no Pillow or decoder, or an icon folder not the one known)
+        print(f"wheel icons: not made ({e}): the item wheel shows the items' names", file=sys.stderr)
+        if os.path.exists(a.wheel_icons):
+            os.remove(a.wheel_icons)
+        return 1
+    return 0
+
+
 PROMPT_KEY = ".prompt_key"
 # host/prompts.c writes these at run time, without changing the build's originals.
 PROMPT_RUNTIME = {"External.bfotf.zs", "Common.bntx.zs", "Common.key", "Common.blarc.zs", "Common.blarc.key", "rsizetable.mod.zs"}
@@ -1322,13 +1370,18 @@ def generate(a):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--romfs", required=True)
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--out")   # (required, but for --wheel-icons)
     ap.add_argument("--faces", default=",".join(ALL_FACES))
     ap.add_argument("--no-textures", action="store_true")
     ap.add_argument("--dump", help="also write every face's images as PNG into <dir>/<face>/ (the names nx2/prompt_faces/<face>/ "
                     "takes in their place), and the game's textures they go into into <dir>/game/")
     ap.add_argument("--incremental", action="store_true", help="keep complete, unchanged output (source-checkout builds)")
+    ap.add_argument("--wheel-icons", help="(hookshot) write the item wheel's icons to this file instead (write_wheel_icons)")
     a = ap.parse_args()
+    if a.wheel_icons:
+        sys.exit(wheel_icons(a))
+    if not a.out:
+        ap.error("the following arguments are required: --out")
     make_prompts(a, a.incremental and not a.dump)   # a layer dump is requested output too: always draw it
 
 

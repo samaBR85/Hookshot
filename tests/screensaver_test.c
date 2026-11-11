@@ -136,7 +136,7 @@ static int gm_cursor_shown(void) { unexpected(); return 1; }
 static void game_menu_press(LPARAM lp, LONG bit) { (void)lp; (void)bit; unexpected(); }
 static void menus_mouse(HWND w, int insert_open, int game_open) { (void)w; (void)insert_open; (void)game_open; unexpected(); }
 static void gm_cursor_off(HWND w) { (void)w; unexpected(); }
-/* (wheel mod: the item wheel takes the mouse while it is open, WM_APP + 20 and its clicks; never run here either) */
+/* (hookshot: the item wheel takes the mouse while it is open, WM_APP + 20 and its clicks; never run here either) */
 static volatile LONG wheel_click, wheel_click_x, wheel_click_y;
 static int wheel_open_now;
 static LONG InterlockedExchange(volatile LONG *target, LONG value) { (void)target; (void)value; unexpected(); return 0; }

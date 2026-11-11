@@ -362,6 +362,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 | | Field of view | 50% to 150%, in steps of 5; applies immediately during gameplay | 100% (original) |
 | | Text speed | Normal, 2x, 4x, Instant | Normal |
 | | Text size | Original, 110%, 125%, 150%, 175% (dialogue, Navi and signs) | Original |
+| | Item wheel | Off, On (holding R or L shows your items as a wheel) | Off |
 | | Microphone | Off, Default, or each microphone by name | Default |
 | | Game language | The game's 16 languages, each by its own name (after a restart) | The one built with |
 | | Menu language | Auto (the game's language), or English, Português (Brasil), Español (Latinoamérica), Español (España), Français, Deutsch, Italiano, Nederlands, Polski, Русский, 日本語, 한국어, 简体中文, 繁體中文 | Auto |
@@ -531,6 +532,8 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
 - **Audio output** is the speakers the game mixes its sound for. Auto is 5.1 when your default output device has 5.1
   or more speakers, else stereo; Stereo or 5.1 chooses one whatever the device has (5.1 on stereo speakers is mixed
   down). For one run, `HOS_AUDIO_CHANNELS=2` or `6` chooses stereo or 5.1 and wins over the menu.
+- **Item wheel:** On shows the items of the R and L item row in a wheel, as in Twilight Princess: hold R or L, point at
+  an item with the left stick or the mouse, and let go (or click it) to equip it. Off is the game's own row.
 - **Microphone** is what the ocarina hears when the game's own microphone option is on (an instrument, or humming).
   Default follows Windows' default recording device; the list shows each microphone by name, and a change applies at
   once. A chosen microphone that is unplugged stays chosen (shown as not connected): Default stands in until it is

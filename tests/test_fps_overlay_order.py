@@ -1,4 +1,4 @@
-"""The overlays (the start-up screen, the item wheel (wheel mod), the menu, the FPS counter) over the window's image: menu_record draws them with Dear ImGui
+"""The overlays (the start-up screen, the item wheel, the menu, the FPS counter) over the window's image: menu_record draws them with Dear ImGui
 in one frame and one recording, the start-up screen under the menu and the counter over both, the wheel over the start-up
 screen's place and under the menu (never with the start-up screen); nothing at all (no ImGui frame,
 no render pass, only ui::idle letting old textures go) while none shows (but one frame that bakes the glyphs after a resize), and no "0 FPS" over the start-up screen.

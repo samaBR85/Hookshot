@@ -110,10 +110,12 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `HOS_DISPLAY_MODES=<w>x<h>,<w>x<h>,...` | The screen's display modes for this run, in place of Windows' (`gpu/vk/display_modes.h`): the Insert menu's Aspect ratio and Output resolution rows offer these sizes and the common sizes of their shapes (`display_modes.h` `common_sizes`), for checking a screen you do not have |
 | `HOS_WIDE_MAX_PX=<pixels>` | The most pixels a picture wider or narrower than 16:9 takes (`host/hos_wide_size.h`): 5120x2160's by default; 8294400 is 3840x2160's, the cap before |
 | `HOS_DYNRES=0`, `HOS_REALTIME_STEP=0`, `HOS_TEXT_SPEED=<0..3>` | Over the options file: Resolution 100% (non-zero: Auto), Game speed Per frame (1: Real time), Text speed |
+| `HOS_ITEM_WHEEL=0` or `1` | Over the Item wheel row for one run (`host/oot_wheel.c`): the game's own item row, or the wheel |
 | `RX_VK_FRAMEGEN=0`, `RX_VK_FRAMEGEN_MULT=<2..8>`, `RX_VK_PACE=0`, `RX_VK_UPSCALE=<0..2>` | No frame generation whatever the menu says; over the options file: its multiplier, frame pacing, the upscaling filter |
 | `RX_VK_DEVICE=<n>` | The graphics card listed as `vk: device <n>` in the log, over the menu's GPU device |
 | `HOOKSHOT_NO_UPDATE_CHECK=1` | No look for a newer release at the start |
 | `HOS_TRACE=1` | Every Horizon call logged, as `--trace` does |
+| `HOS_WHEEL_TRACE=1` | The item wheel's openings, items, D-pad taps and the R it keeps held, logged (`host/oot_wheel.c`) |
 | `RX_BACKEND=<name>` | Unset or `vulkan`: `hookshot_vk.dll`; any other value: the WebGPU renderer, when the exe was built with one |
 | `HOS_GPU_ALLOC_RETRY=0` | A model's material-block allocations from a full heap (the OptimizeChangeBank thread's two CPU buffers and two GPU-memory calls in f_804566e0) not tried in the heap's parents, as shipped (`host/oot_heap_retry.c`, issue 1697) |
 | `HOS_GPU_ALLOC_TEST_FAIL=<n>` or `<gpu>,<cpu>` | A test: the first n of those allocations of each kind (or that many of the GPU memory and of the CPU buffers) refused by the heap they name, as a full heap would, so the retry runs |
@@ -219,6 +221,7 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_ASYNC=1` | The replay on a thread of its own instead of the game's submitting thread |
 | `RX_VK_DESC_REUSE=0/1/never` | Over the Descriptor reuse row for a run, with its values: 0 its Off (a draw keeps the descriptors of the draw before it while no registration at all was made), 1 its On (through registrations of slots it does not sample, the default); `never`: every draw builds its own |
 | `RX_VK_NAN_GUARD=0` | No NaN guard on float colour outputs (on by default on every card: one NaN texel spreads through bloom into glowing blocks) |
+| `RX_VK_WHEEL_BACKDROP=0` | The item wheel without its backdrop (the scene before the HUD, blurred and dimmed: `framegen_wheel_backdrop` in `gpu/vk/vk_framegen.cpp`): the game's picture, its item row and HUD, shows behind it |
 | `RX_VK_FIFO=1`, `RX_VK_IMMEDIATE=1` | V-Sync On (FIFO) or Off (immediate) for one run, over the menu's V-Sync row |
 | `HOS_VCORES=0`, `HOS_CORES=<1..8>`, `HOS_RESERVE_CORE=0` | No virtual cores; the cores the game sees (6); no core kept for the replay (one is, with 8 or more logical processors) |
 

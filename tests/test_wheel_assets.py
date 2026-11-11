@@ -1,5 +1,5 @@
-"""Game-free: the item wheel's files, made at the end of every build (nx2/make_game.py runs nx2/wheel_icons.py and
-nx2/wheel_sounds.py), are what the game reads: wheel/icons.bin for gpu/vk/vk_menu.cpp and wheel/sounds.bin for
+"""Game-free: the item wheel's files, made at the end of every build (nx2/make_game.py runs nx2/prompt_assets.py with
+--wheel-icons, and nx2/wheel_sounds.py), are what the game reads: wheel/icons.bin for gpu/vk/vk_menu.cpp and wheel/sounds.bin for
 host/nn_audio.c, with the same magic, version and record layout; every sound the host plays is one the build writes; and
 wheel_sounds.py finds the names and sounds of a BARS archive.
 
@@ -25,20 +25,30 @@ def fail(msg):
 
 def build_runs_them():
     make = read("nx2", "make_game.py")
-    for script, out in (("wheel_icons.py", "icons.bin"), ("wheel_sounds.py", "sounds.bin")):
-        if not re.search(r'os\.path\.join\(HERE, "%s"\), "--romfs", romfs, "--out", os\.path\.join\(wheel, "%s"\)'
-                         % (re.escape(script), re.escape(out)), make):
-            fail("nx2/make_game.py does not run nx2/%s into wheel/%s" % (script, out))
+    if not re.search(r'os\.path\.join\(HERE, "prompt_assets\.py"\), "--romfs", romfs, "--wheel-icons", icons\]', make) or \
+            'icons = os.path.join(wheel, "icons.bin")' not in make:
+        fail("nx2/make_game.py does not have nx2/prompt_assets.py write wheel/icons.bin")
+    # (a run of its own: inside the prompts' run, a kept prompt set (--incremental) would leave the wheel without icons)
+    if re.search(r'"--incremental"[^\n]*\n?[^\n]*"--wheel-icons"|"--wheel-icons"[^\n]*\n?[^\n]*"--incremental"', make):
+        fail("nx2/make_game.py makes the wheel icons in the prompts' run, which can keep the prompts and make nothing")
+    if not re.search(r'os\.path\.join\(HERE, "wheel_sounds\.py"\), "--romfs", romfs, "--out", os\.path\.join\(wheel, '
+                     r'"sounds\.bin"\)', make):
+        fail("nx2/make_game.py does not run nx2/wheel_sounds.py into wheel/sounds.bin")
     if 'wheel = os.path.join(out, "wheel")' not in make:
         fail("nx2/make_game.py's wheel folder is not <game folder>/wheel")
+    # (CONTRIBUTING.md: Pillow and the texture decoders in nx2/prompt_assets.py and nx2/prompt_draw.py alone)
+    if re.search(r"^\s*(import|from)\s+(PIL|texture2ddecoder|astc_encoder|fontTools)\b", read("nx2", "wheel_sounds.py"), re.M):
+        fail("nx2/wheel_sounds.py imports a dependency the button prompts alone may use")
+    if (ROOT / "nx2" / "wheel_icons.py").exists():
+        fail("nx2/wheel_icons.py is back: the icons are nx2/prompt_assets.py's (--wheel-icons)")
 
 
 def icons_match():
-    writer, reader = read("nx2", "wheel_icons.py"), read("gpu", "vk", "vk_menu.cpp")
-    if 'f.write(b"HWIC" + struct.pack("<III", 1, len(icons), a.size))' not in writer:
-        fail("nx2/wheel_icons.py's header is not HWIC, version 1, count, size")
+    writer, reader = read("nx2", "prompt_assets.py"), read("gpu", "vk", "vk_menu.cpp")
+    if 'f.write(b"HWIC" + struct.pack("<III", 1, len(icons), size))' not in writer:
+        fail("nx2/prompt_assets.py's wheel icons header is not HWIC, version 1, count, size")
     if 'name.encode()[:47].ljust(48, b"\\0") + px' not in writer:
-        fail("nx2/wheel_icons.py's record is not name[48] then the pixels")
+        fail("nx2/prompt_assets.py's wheel icon record is not name[48] then the pixels")
     if '"wheel/icons.bin"' not in reader or '!std::memcmp(magic, "HWIC", 4)' not in reader or "hd[0] == 1" not in reader:
         fail("gpu/vk/vk_menu.cpp does not read wheel/icons.bin as HWIC version 1")
     if not re.search(r"struct WheelIcon \{\s*char name\[48\];", reader):

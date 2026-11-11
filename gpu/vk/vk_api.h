@@ -51,7 +51,7 @@ enum { HOS_OPT_FOV = 51 };
    and Navi waking Link. 44 stays reserved for Skip title, 49 and 50 for Walk, 60 for the item wheel. A new option id
    answered by the existing option callback does not change MkwVkHost or MkwVkRenderer.) */
 enum { HOS_OPT_SKIP_OPENING = 52 };
-/* (wheel mod) the Gameplay tab's Item wheel row (host/oot_wheel.c): 1 the wheel, 0 the game's own item row */
+/* (hookshot) the Gameplay tab's Item wheel row (host/oot_wheel.c): 1 the wheel, 0 the game's own item row */
 enum { HOS_OPT_ITEM_WHEEL = 60 };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
@@ -102,7 +102,7 @@ typedef struct MkwVkSetting {
     int value, lo, hi, step;
     int restart, fixed;   /* the change applies at the next start; nothing to choose on this PC (the menu shows it greyed) */
 } MkwVkSetting;
-/* (wheel mod) The R button's item row shown as a wheel (host/oot_wheel.c fills it, gpu/vk/vk_menu.cpp draws it): the
+/* (hookshot) The R button's item row shown as a wheel (host/oot_wheel.c fills it, gpu/vk/vk_menu.cpp draws it): the
    items in the row's order, the game's cursor and the stick's pick. seq changes whenever anything else does; the
    back end copies the whole and checks seq again (a copy made while the game side wrote is taken the next frame) */
 #define MKWVK_WHEEL_MAX 32
