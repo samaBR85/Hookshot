@@ -36,6 +36,7 @@
 #include "oot_cheat_items.h"
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
 #include "vk_ui.h"
+#include "imgui_internal.h"   // (wheel mod: RegisterUserTexture, the item wheel's icons)
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
 #include "vk_dlss.h"
 #include "vk_framegen.h"   // (Frame generation by: who makes the frames now, framegen_maker)
@@ -1144,6 +1145,8 @@ MENU_HINTS(hn_text_speed, 0, "The game's own pace, with its pauses.", "Twice as 
 MENU_HINTS(hn_audio_output, 0, "5.1 when the default output device has 5.1 or more speakers, else stereo.",
            "Stereo, whatever the device has.", "5.1, whatever the device has. Mixed down on stereo speakers.")
 MENU_HINTS(hn_text_size, 0, "The game's original size.", "A little larger.", "Larger.", "Much larger.", "Largest.")
+MENU_HINTS(hn_item_wheel, 0, "The game's own row of items.",
+           "A ring of all your items over the blurred game: point the left stick or the mouse at one and let go.")
 MENU_HINTS(hn_background, 0, "Only while the game's window has the focus.",
            "Also behind other windows, for streaming or other apps. The keyboard and mouse still need the game's window.")
 MENU_HINTS(hn_mousecam, 0, "The mouse stands in for the right stick, with its curve and top speed.",
@@ -1277,6 +1280,8 @@ Row rows[] = {
      "How fast the letters of dialogue and other messages appear.", hn_text_speed, false, true},
     {TAB_GAMEPLAY, "Text size", &opts.text_size, 0, 4, 1, tx_text_size,
      "How large the text of dialogue, Navi and signs is drawn.", hn_text_size, false, true},
+    {TAB_GAMEPLAY, "Item wheel", &opts.item_wheel, 0, 1, 1, tx_onoff,
+     "What holding R or L shows: your items in a wheel, or the game's own row.", hn_item_wheel, false, true},
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},
@@ -4258,6 +4263,8 @@ int menu_player_flight() { return cheats_on() ? player_flight.load(std::memory_o
 int menu_free_camera() { return cheats_on() ? free_camera.load(std::memory_order_relaxed) : 0; }
 int menu_link_speed() { return cheats_on() ? link_speeds[std::clamp(link_speed.load(std::memory_order_relaxed), 0, kLinkSpeeds - 1)] : 100; }
 int menu_take_cheat_action() { return cheat_action.exchange(0, std::memory_order_relaxed); }
+// (wheel mod) an inventory count the game side reported (OOT_CHEAT_ITEM_BASE + i), for the item wheel's numbers
+int menu_item_count(int i) { return i >= 0 && i < kItems ? item_counts[i].load(std::memory_order_relaxed) : -1; }
 
 void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t window_w, uint32_t window_h) {
     const auto c = [](uint32_t v) { return (uint64_t)std::min(v, 0xffffu); };
@@ -4606,6 +4613,274 @@ void cheat_press(int i, const bool* press, bool& changed) {
         cheat_action.store(999);   // (host/hos_main.c OOT_AGE_ACTION)
         open_now = false;
         changed = true;
+    }
+}
+// ---- (wheel mod) the R button's item wheel (host/oot_wheel.c, host->wheel): the items in a ring round the screen's
+// centre, the first at the top and the rest clockwise; the row's cursor in gold, the item the stick points at ringed in
+// white, the chosen item's icon in the middle and its name on a banner under the ring. Drawn on Dear ImGui's draw lists
+// under the Insert menu and the FPS counter (menu_record), the game's item icons from one texture (wheel_icons_load) ----
+static MkwVkWheel wheel_now;          // (the state drawn this frame: wheel_update)
+static float wheel_spread = 1.0f;     // (the opening's animation: the slots' distance from the centre, 0.35 to 1)
+
+// The slots on one ring, or from 17 items on two: every other slot on an inner ring (staggered), so each keeps its own
+// direction (the stick and the mouse pick by direction alone) and the slots stay large. HOS_WHEEL_TWO_RINGS=<n>: two
+// rings from n items. ring_r: the (outer) ring's radius, inner_r the inner one's (ring_r on one ring)
+static bool wheel_two_rings(int count) {
+    static const int from = [] {
+        const char* e = getenv("HOS_WHEEL_TWO_RINGS");
+        return e && atoi(e) > 2 ? atoi(e) : 17;
+    }();
+    return count >= from;
+}
+constexpr float kWheelBannerGap = 3, kWheelBannerHalf = 3;   // (units: the gap above the name banner, its half height)
+static void wheel_geometry(float u, int count, float* ring_r, float* slot_r, float* centre_r, float* inner_r) {
+    const double pi = 3.14159265358979;
+    *centre_r = 12 * u;
+    double fit;
+    if (!wheel_two_rings(count)) {
+        *ring_r = 26 * u;   // (the slots' centres)
+        *inner_r = *ring_r;
+        fit = count > 1 ? *ring_r * std::sin(pi / count) * 0.92 : 9.0 * u;
+    } else {
+        *ring_r = 31 * u;
+        const float in = 22 * u;
+        *inner_r = in;
+        const double a = 2 * pi / count;
+        const double same = 2.0 * in * std::sin(a);   // (inner neighbours)
+        const double cross = std::sqrt((double)in * in + (double)*ring_r * *ring_r - 2.0 * in * *ring_r * std::cos(a));
+        double closest = std::min(same, cross);
+        if (count % 2) closest = std::min(closest, 2.0 * *ring_r * std::sin(a / 2));   // (the last and the first, both outer)
+        fit = closest * 0.46;
+    }
+    *slot_r = (float)std::max(3.0 * u, std::min(7.0 * u, fit));   // (a slot's radius)
+}
+// the name banner's centre below the wheel's: under the outer slots by the gap
+static float wheel_banner_y(float u, float ring_r, float slot_r) { return ring_r + slot_r + (kWheelBannerGap + kWheelBannerHalf) * u; }
+// slot i's centre, wheel_spread of the way out
+static ImVec2 wheel_slot_at(int i, int n, ImVec2 c, float ring_r, float inner_r) {
+    const double a = 2 * 3.14159265358979 * i / n;
+    const double r = (wheel_two_rings(n) && i % 2 ? inner_r : ring_r) * (double)wheel_spread;
+    return ImVec2(c.x + (float)(std::sin(a) * r), c.y - (float)(std::cos(a) * r));
+}
+
+// The game's item icons, wheel/icons.bin in the game folder (nx2/wheel_icons.py makes it from the user's RomFS at every
+// build: "HWIC", u32 version 1, u32 count, u32 size, then each icon's char name[48] and size*size RGBA, straight alpha), read
+// the first time the wheel shows into one texture: a grid of cells a pixel wider than the icon on each side, the see-through
+// pixels given their opaque neighbours' colour, so the filtering at the icons' edges does not darken them. None (no file):
+// the slots show the items' names instead
+struct WheelIcon {
+    char name[48];
+    int cell;
+};
+static std::vector<WheelIcon> wheel_icons;
+static ImTextureData* wheel_atlas = nullptr;
+static int wheel_icon_px = 0, wheel_cols = 1;
+static void wheel_icons_load() {
+    static bool tried = false;
+    if (tried) return;
+    tried = true;
+    char exe[MAX_PATH];
+    const DWORD n = game_module_path(exe, MAX_PATH);
+    std::string path(exe, n);
+    path = path.substr(0, path.find_last_of("\\/") + 1) + "wheel/icons.bin";
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) {
+        logf("wheel: no icons (%s): the slots show names", path.c_str());
+        return;
+    }
+    char magic[4];
+    uint32_t hd[3];
+    std::vector<std::vector<uint8_t>> pixels;
+    if (fread(magic, 1, 4, f) == 4 && !std::memcmp(magic, "HWIC", 4) && fread(hd, 4, 3, f) == 3 && hd[0] == 1 && hd[2] >= 8 &&
+        hd[2] <= 512 && hd[1] <= 1024) {
+        const size_t bytes = (size_t)hd[2] * hd[2] * 4;
+        for (uint32_t i = 0; i < hd[1]; i++) {
+            WheelIcon ic{};
+            std::vector<uint8_t> px(bytes);
+            if (fread(ic.name, 1, sizeof ic.name, f) != sizeof ic.name || fread(px.data(), 1, bytes, f) != bytes) break;
+            ic.name[sizeof ic.name - 1] = 0;
+            ic.cell = (int)wheel_icons.size();
+            wheel_icons.push_back(ic);
+            pixels.push_back(std::move(px));
+        }
+        wheel_icon_px = (int)hd[2];
+    }
+    fclose(f);
+    if (wheel_icons.empty()) {
+        logf("wheel: %s has no icons: the slots show names", path.c_str());
+        return;
+    }
+    const int s = wheel_icon_px, cell = s + 2, count = (int)wheel_icons.size();
+    wheel_cols = std::max(1, (int)std::ceil(std::sqrt((double)count)));
+    const int rows = (count + wheel_cols - 1) / wheel_cols, aw = wheel_cols * cell, ah = rows * cell;
+    wheel_atlas = IM_NEW(ImTextureData)();
+    wheel_atlas->Create(ImTextureFormat_RGBA32, aw, ah);
+    uint8_t* dst = (uint8_t*)wheel_atlas->GetPixels();
+    std::memset(dst, 0, (size_t)aw * ah * 4);
+    for (int i = 0; i < count; i++) {
+        const int x0 = i % wheel_cols * cell + 1, y0 = i / wheel_cols * cell + 1;
+        for (int y = 0; y < s; y++) std::memcpy(dst + ((size_t)(y0 + y) * aw + x0) * 4, pixels[i].data() + (size_t)y * s * 4, (size_t)s * 4);
+    }
+    // (the see-through pixels next to coloured ones take their average colour, twice outwards; the alpha stays 0)
+    std::vector<uint8_t> has((size_t)aw * ah);
+    for (size_t p = 0; p < has.size(); p++) has[p] = dst[p * 4 + 3] != 0;
+    for (int pass = 0; pass < 2; pass++) {
+        std::vector<uint8_t> next = has;
+        for (int y = 0; y < ah; y++)
+            for (int x = 0; x < aw; x++) {
+                const size_t p = (size_t)y * aw + x;
+                if (has[p]) continue;
+                int sum[3] = {0, 0, 0}, k = 0;
+                for (int dy = -1; dy <= 1; dy++)
+                    for (int dx = -1; dx <= 1; dx++) {
+                        const int nx = x + dx, ny = y + dy;
+                        if ((!dx && !dy) || nx < 0 || ny < 0 || nx >= aw || ny >= ah || !has[(size_t)ny * aw + nx]) continue;
+                        const uint8_t* q = dst + ((size_t)ny * aw + nx) * 4;
+                        sum[0] += q[0], sum[1] += q[1], sum[2] += q[2], k++;
+                    }
+                if (!k) continue;
+                uint8_t* d = dst + p * 4;
+                d[0] = (uint8_t)(sum[0] / k), d[1] = (uint8_t)(sum[1] / k), d[2] = (uint8_t)(sum[2] / k);
+                next[p] = 1;
+            }
+        has.swap(next);
+    }
+    wheel_atlas->UseColors = true;
+    ImGui::RegisterUserTexture(wheel_atlas);
+    logf("wheel: %d icons of %d px from %s (one %dx%d texture)", count, s, path.c_str(), aw, ah);
+}
+static const WheelIcon* wheel_icon(const char* name) {
+    for (const WheelIcon& ic : wheel_icons)
+        if (!std::strcmp(ic.name, name)) return &ic;
+    return nullptr;
+}
+// an icon side px wide centred on m (its cell's texels, half a texel in from the edges)
+static void wheel_draw_icon(ui::Ctx& c, const WheelIcon& ic, ImVec2 m, float side) {
+    if (!wheel_atlas || side <= 0) return;
+    const float cell = (float)(wheel_icon_px + 2), aw = (float)wheel_atlas->Width, ah = (float)wheel_atlas->Height;
+    const float x0 = ic.cell % wheel_cols * cell + 1, y0 = ic.cell / wheel_cols * cell + 1;
+    const ImVec2 uv0((x0 + 0.5f) / aw, (y0 + 0.5f) / ah), uv1((x0 + wheel_icon_px - 0.5f) / aw, (y0 + wheel_icon_px - 0.5f) / ah);
+    c.d->AddImage(wheel_atlas->GetTexRef(), m - ImVec2(side, side) * 0.5f, m + ImVec2(side, side) * 0.5f, uv0, uv1);
+}
+
+// This frame's wheel from the host (a seqlock: odd while the host writes it); false when it is not shown. The opening's
+// spread is worked out here
+static bool wheel_update() {
+    const MkwVkWheel* src = host && host->wheel ? host->wheel() : nullptr;
+    constexpr int64_t kSpreadNs = 160000000;
+    static int64_t opened_at = 0;
+    static bool shown = false;
+    if (!src) return shown = false;
+    const uint32_t s1 = __atomic_load_n(&src->seq, __ATOMIC_ACQUIRE);
+    if (!(s1 & 1)) {
+        MkwVkWheel copy;
+        std::memcpy(&copy, (const void*)src, sizeof copy);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (__atomic_load_n(&src->seq, __ATOMIC_ACQUIRE) == s1) {   // (else written meanwhile: the last frame's again)
+            copy.count = std::min(copy.count, (int32_t)MKWVK_WHEEL_MAX);
+            for (int i = 0; i < copy.count; i++)
+                copy.label[i][sizeof copy.label[i] - 1] = 0, copy.name[i][sizeof copy.name[i] - 1] = 0;
+            wheel_now = copy;
+            shown = copy.open && copy.count > 0;
+        }
+    }
+    if (!shown) {
+        opened_at = 0;
+        return false;
+    }
+    const int64_t t_now = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (!opened_at) opened_at = t_now;
+    const double t = std::min(1.0, (double)(t_now - opened_at) / kSpreadNs);
+    wheel_spread = (float)(0.35 + 0.65 * (1 - (1 - t) * (1 - t) * (1 - t)));   // (ease out)
+    return true;
+}
+
+// text with a dark outline (o pixels), its top left at p
+static void wheel_text(ui::Ctx& c, ImFont* font, float px, ImVec2 p, ImU32 col, const char* t, float o) {
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++)
+            if (dx || dy) c.d->AddText(font, px, ImVec2(p.x + dx * o, p.y + dy * o), ui::rgba(0, 0, 0, 230), t);
+    c.d->AddText(font, px, p, col, t);
+}
+// a label centred on m, split in two lines at the space nearest its middle when it is wider than width
+static void wheel_label(ui::Ctx& c, ImFont* font, float px, ImVec2 m, const char* text, float width, ImU32 col, float o) {
+    const ImVec2 sz = ui::size_of(font, px, text);
+    const int n = (int)strlen(text);
+    int cut = -1;
+    if (sz.x > width)
+        for (int i = 0; i < n; i++)
+            if (text[i] == ' ' && (cut < 0 || std::abs(i - n / 2) < std::abs(cut - n / 2))) cut = i;
+    if (cut < 0) {
+        wheel_text(c, font, px, ImVec2(m.x - sz.x * 0.5f, ui::mid_top(font, px, m.y)), col, text, o);
+        return;
+    }
+    char a[64], b[64];
+    snprintf(a, sizeof a, "%.*s", cut, text);
+    snprintf(b, sizeof b, "%s", text + cut + 1);
+    const float line = px * 1.05f;
+    wheel_text(c, font, px, ImVec2(m.x - ui::size_of(font, px, a).x * 0.5f, ui::mid_top(font, px, m.y - line * 0.5f)), col, a, o);
+    wheel_text(c, font, px, ImVec2(m.x - ui::size_of(font, px, b).x * 0.5f, ui::mid_top(font, px, m.y + line * 0.5f)), col, b, o);
+}
+// a disc of radius r with an edge of e pixels
+static void wheel_disc(ui::Ctx& c, ImVec2 m, float r, float e, ImU32 fill, ImU32 edge) {
+    c.d->AddCircleFilled(m, r, edge);
+    c.d->AddCircleFilled(m, std::max(0.0f, r - e), fill);
+}
+
+static void draw_wheel(ui::Ctx& c) {
+    wheel_icons_load();
+    const MkwVkWheel& wh = wheel_now;
+    const int n = wh.count;
+    const float u = std::max(1.0f, std::floor(c.h / 100));   // (a hundredth of the window's height)
+    const ImVec2 m(std::floor(c.w / 2), std::floor(c.h / 2));
+    float ring_r, slot_r, centre_r, inner_r;
+    wheel_geometry(u, n, &ring_r, &slot_r, &centre_r, &inner_r);
+    const ImU32 dark = ui::rgba(22, 24, 34), rim = ui::rgba(120, 112, 88), gold = ui::rgba(236, 196, 84),
+                gold_dark = ui::rgba(70, 56, 18), white = ui::rgba(244, 244, 236), line = ui::rgba(84, 78, 62);
+    const float thick = std::max(2.0f, u / 2), edge = std::max(2.0f, std::floor(u / 3)), o = std::max(1.0f, std::floor(u / 5));
+    c.d->AddCircle(m, ring_r * wheel_spread, line, 0, thick);
+    if (inner_r != ring_r) c.d->AddCircle(m, inner_r * wheel_spread, line, 0, thick);
+    wheel_disc(c, m, centre_r, edge, dark, gold);
+    const int focus = wh.pick >= 0 && wh.pick < n ? wh.pick : wh.cursor;
+    for (int i = 0; i < n; i++) {
+        const ImVec2 p = wheel_slot_at(i, n, m, ring_r, inner_r);
+        const bool on = i == wh.cursor, picked = i == wh.pick;
+        if (picked) c.d->AddCircleFilled(p, slot_r + std::max(2.0f, u / 2), white);
+        wheel_disc(c, p, slot_r, edge, on ? gold_dark : dark, on ? gold : rim);
+        if (const WheelIcon* ic = wheel_icon(wh.name[i])) wheel_draw_icon(c, *ic, p, slot_r * 1.38f);
+    }
+    const WheelIcon* focus_icon = focus >= 0 && focus < n ? wheel_icon(wh.name[focus]) : nullptr;
+    if (focus_icon) wheel_draw_icon(c, *focus_icon, m, centre_r * 1.3f);
+    ImFont* font = c.f.strong;
+    const float small = std::max(10.0f, std::round(1.7f * u)), big = std::max(14.0f, std::round(2.4f * u)),
+                name_px = std::max(16.0f, std::round(3.3f * u)), count_px = std::max(12.0f, std::round(slot_r * 0.52f));
+    for (int i = 0; i < n; i++) {   // (names only where the game has no icon for the item)
+        if (wheel_icon(wh.name[i])) continue;
+        wheel_label(c, font, small, wheel_slot_at(i, n, m, ring_r, inner_r), wh.label[i], 2 * slot_r - u, i == wh.cursor ? gold : white, o);
+    }
+    for (int i = 0; i < n; i++) {   // (the counts, as the game's HUD shows them: at a slot's lower right, grey at none left)
+        if (wh.amount[i] < 0) continue;
+        const ImVec2 p = wheel_slot_at(i, n, m, ring_r, inner_r);
+        char num[12];
+        snprintf(num, sizeof num, "%d", (int)wh.amount[i]);
+        const float tw = ui::size_of(font, count_px, num).x;
+        wheel_text(c, font, count_px, ImVec2(p.x + slot_r - tw, ui::mid_top(font, count_px, p.y + slot_r - count_px * 0.45f)),
+                   wh.amount[i] ? ui::rgba(250, 250, 240) : ui::rgba(150, 150, 150), num, o);
+    }
+    if (focus >= 0 && focus < n && !focus_icon)   // (an item with no icon: its name in the middle too)
+        wheel_label(c, font, big, m, wh.label[focus], 2 * centre_r - 2 * u, focus == wh.cursor ? gold : white, o);
+    // the name banner under the ring, Twilight Princess style: the focused item's name on a dark plate with round ends
+    const char* name = focus >= 0 && focus < n ? wh.label[focus] : "";
+    if (*name) {
+        const float by = m.y + wheel_banner_y(u, ring_r, slot_r), hh = kWheelBannerHalf * u;
+        const float tw = ui::size_of(font, name_px, name).x;
+        const float half_w = std::min(c.w / 2 - 1, std::max(16 * u, tw / 2 + 4 * u));
+        const ImU32 edge_col = focus == wh.cursor ? gold : rim;
+        c.d->AddRectFilled(ImVec2(m.x - half_w, by - hh), ImVec2(m.x + half_w, by + hh), edge_col, hh);
+        c.d->AddRectFilled(ImVec2(m.x - half_w + edge, by - hh + edge), ImVec2(m.x + half_w - edge, by + hh - edge), dark,
+                           std::max(0.0f, hh - edge));
+        wheel_text(c, font, name_px, ImVec2(m.x - tw * 0.5f, ui::mid_top(font, name_px, by)), focus == wh.cursor ? gold : white,
+                   name, o);
     }
 }
 
@@ -5151,7 +5426,8 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     const bool start = startup_on.load(std::memory_order_acquire);
     const bool fps = opts.show_fps && !start;   // (no game frames yet: not "0 FPS" over the start-up screen)
     const bool open = open_now.load(std::memory_order_relaxed);
-    if (!start && !fps && !open) {   // (nothing shows: no ImGui frame, no render pass)
+    const bool wheel = wheel_update() && !start;   // (wheel mod: the item wheel open)
+    if (!start && !fps && !open && !wheel) {   // (nothing shows: no ImGui frame, no render pass)
         // (but a new window size or Menu size since the last bake: one frame with nothing drawn that bakes the menu's glyphs
         // and measures its page for the new size, so the next open has no hitch whatever was resized while nothing showed)
         if (prebake_needed(w, h) && ui::begin(w, h)) {
@@ -5174,6 +5450,7 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
     ui::Ctx c = ui_ctx(w, h);
     prebake(c);   // (the menu's glyphs at this size, before it opens: no hitch then)
     if (start) draw_startup(c);   // (under the menu)
+    if (wheel) draw_wheel(c);     // (wheel mod: under the menu and the counter)
     if (open) draw_menu(c);
     if (fps) draw_fps(c, open);
     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)
@@ -5183,9 +5460,11 @@ void menu_record(VkCommandBuffer cmd, uint32_t index, uint32_t w, uint32_t h) {
 void menu_record_image(VkCommandBuffer cmd, VkImage image, VkImageView view, uint32_t w, uint32_t h) {
     const bool open = open_now.load(std::memory_order_relaxed);
     const bool fps = opts.show_fps && !startup_on.load(std::memory_order_acquire);
-    if (!open && !fps) return;
+    const bool wheel = wheel_update() && !startup_on.load(std::memory_order_relaxed);   // (wheel mod)
+    if (!open && !fps && !wheel) return;
     if (!ui::begin(w, h)) return;
     ui::Ctx c = ui_ctx(w, h);
+    if (wheel) draw_wheel(c);
     if (open) draw_menu(c);
     if (fps) draw_fps(c, open);
     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (Dear ImGui records into cmd directly, its backend through its own pointers: what this thread recorded through vk_work.h reaches cmd first)

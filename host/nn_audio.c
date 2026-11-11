@@ -106,6 +106,7 @@ typedef struct {
     float split_bq_z[MAX_SPLIT_DESTS][2][MAX_CH][2];
     uint64_t split_bq_epoch[MAX_SPLIT_DESTS][2];
     int dropped;
+    int hushed;                                /* (wheel mod) the item row's tick while the wheel steers the row: silent */
 } Voice;
 
 static CRITICAL_SECTION lock;
@@ -485,6 +486,109 @@ static void effects_frame(int mix) {
     }
 }
 
+/* ---- (wheel mod) the item wheel's sounds ------------------------------------------------------------------------ */
+/* <game folder>/wheel/sounds.bin (nx2/wheel_sounds.py, run by make_game.py: the item row's own sounds, decoded from the RomFS), read
+   at the first use. hos_audio_cue plays one over the game's output. While the wheel steers the game's hidden row
+   (hos_wheel_hush, oot_wheel.c), the game's own voices of the row's tick (known by their ADPCM coefficients) are silent:
+   the wheel ticks once a slot, not once a tap of the row behind it (8 taps of a survey ticked 8 times). */
+typedef struct {
+    char name[48];
+    int frames;
+    int16_t coefs[16];
+    const int16_t *pcm;   /* frames x 2 (stereo) */
+} WheelSound;
+#define MAX_WHEEL_SOUNDS 8
+#define MAX_CUES 4
+#define WHEEL_TICK "SE_Sys_ShortCut_CursolMove_00"
+static WheelSound wsounds[MAX_WHEEL_SOUNDS];
+static int nwsounds, wsounds_read;
+static struct { int s, pos; } cues[MAX_CUES] = {{-1, 0}, {-1, 0}, {-1, 0}, {-1, 0}};
+
+static void wheel_sounds_read(void) {   /* (with the lock held) */
+    if (wsounds_read) return;
+    wsounds_read = 1;
+    char path[MAX_PATH + 32];
+    const DWORD n = hos_game_path_a(path, MAX_PATH);
+    if (!n || n >= MAX_PATH) return;
+    char *name = path + n;
+    while (name > path && name[-1] != '\\' && name[-1] != '/') name--;
+    strcpy(name, "wheel/sounds.bin");
+    FILE *f = fopen(path, "rb");
+    if (!f) { hos_log("audio: no wheel sounds (%s)", path); return; }
+    fseek(f, 0, SEEK_END);
+    const long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *b = size > 12 ? (uint8_t *)malloc((size_t)size) : NULL;
+    const int ok = b && fread(b, 1, (size_t)size, f) == (size_t)size && !memcmp(b, "HWSN", 4);
+    fclose(f);
+    if (!ok) { free(b); hos_log("audio: %s is not a wheel sounds file", path); return; }
+    uint32_t count;
+    memcpy(&count, b + 8, 4);
+    long at = 12;
+    for (uint32_t i = 0; i < count && nwsounds < MAX_WHEEL_SOUNDS && at + 88 <= size; i++) {
+        WheelSound *w = &wsounds[nwsounds];
+        uint32_t rate, frames;
+        memcpy(w->name, b + at, 48);
+        w->name[47] = 0;
+        memcpy(&rate, b + at + 48, 4);
+        memcpy(&frames, b + at + 52, 4);
+        memcpy(w->coefs, b + at + 56, 32);
+        if (at + 88 + (long)frames * 4 > size) break;
+        w->frames = (int)frames;
+        w->pcm = (const int16_t *)(b + at + 88);
+        at += 88 + (long)frames * 4;
+        if (rate == RATE) nwsounds++;   /* (the output's rate only: no resampling here) */
+    }
+    hos_log("audio: %d wheel sounds from %s", nwsounds, path);   /* (b stays: the sounds point into it) */
+}
+static int wheel_sound(const char *name) {
+    for (int i = 0; i < nwsounds; i++)
+        if (!strcmp(wsounds[i].name, name)) return i;
+    return -1;
+}
+void hos_audio_cue(const char *name) {
+    au_lock();
+    wheel_sounds_read();
+    const int s = wheel_sound(name);
+    if (s >= 0) {   /* (a free slot, else the one furthest along) */
+        int slot = -1;
+        for (int i = 0; i < MAX_CUES && slot < 0; i++)
+            if (cues[i].s < 0) slot = i;
+        if (slot < 0) {
+            slot = 0;
+            for (int i = 1; i < MAX_CUES; i++)
+                if (cues[i].pos > cues[slot].pos) slot = i;
+        }
+        cues[slot].s = s, cues[slot].pos = 0;
+    }
+    au_unlock();
+}
+/* a voice's wave buffer is appended (with the lock held): is it the row's tick while the wheel steers the row? */
+static int wheel_hushes(const Voice *v) {
+    int hos_wheel_hush(void);   /* oot_wheel.c */
+    if (v->format != FMT_ADPCM || !hos_wheel_hush()) return 0;
+    wheel_sounds_read();
+    const int s = wheel_sound(WHEEL_TICK);
+    return s >= 0 && !memcmp(v->coefs, wsounds[s].coefs, sizeof v->coefs);
+}
+static void wheel_cues_frame(float out[][FRAME]) {   /* over the game's front left and right */
+    static float gain = -1;
+    if (gain < 0) {   /* HOS_WHEEL_SOUND_GAIN: the game played the row's tick at 0.71 of the sound */
+        const char *e = getenv("HOS_WHEEL_SOUND_GAIN");
+        gain = e ? (float)atof(e) : 0.7f;
+        if (!(gain >= 0)) gain = 0.7f;
+    }
+    for (int k = 0; k < MAX_CUES; k++) {
+        if (cues[k].s < 0) continue;
+        const WheelSound *w = &wsounds[cues[k].s];
+        for (int i = 0; i < FRAME && cues[k].pos < w->frames; i++, cues[k].pos++) {
+            out[0][i] += w->pcm[2 * cues[k].pos] * (gain / 32768.0f);
+            out[1][i] += w->pcm[2 * cues[k].pos + 1] * (gain / 32768.0f);
+        }
+        if (cues[k].pos >= w->frames) cues[k].s = -1;
+    }
+}
+
 /* ---- the mixer ------------------------------------------------------------------------------------------------- */
 static void biquad_frame(float *samples, const float b[3], const float a[2], float z[2]) {
     float z0 = z[0], z1 = z[1];
@@ -537,6 +641,7 @@ static void render_voice(Voice *v) {
         for (int ch = 0; ch < v->channels && ch < MAX_CH; ch++)
             biquad_frame(out[ch], v->bq_b[f], v->bq_a[f], v->bq_z[f][ch]);
     }
+    if (v->hushed) memset(out, 0, sizeof out);   /* (wheel mod: it plays on, unheard, and its buffers are released) */
     if (v->dest_kind == DEST_MIX && mixes[v->dest].used) {
         Mix *m = &mixes[v->dest];
         for (int ch = 0; ch < v->channels; ch++)
@@ -638,6 +743,7 @@ static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the de
             }
         }
     }
+    wheel_cues_frame(out);
     const int nch = six ? 6 : 2;
     {   /* HOS_AUDIO_STATS=1: once a second, what plays and where the signal is */
         static int stats = -1, frames;
@@ -1788,6 +1894,14 @@ HLE(_ZN2nn5audio16AppendWaveBufferEPNS0_9VoiceTypeEPKNS0_10WaveBufferE) {
             }
         }
         const Cmd k = {.op = OP_VOICE_APPEND, .idx = (int)(v - voices), .wbp = ARG(1), .wb = read_wb(ARG(1))};
+        {   /* (wheel mod) */
+            const int hush = wheel_hushes(v);
+            if (hush && !v->hushed) {
+                static int logged;
+                if (logged++ < 4) hos_log("audio: voice %d is the item row's tick while the wheel steers it: silent", (int)(v - voices));
+            }
+            v->hushed = hush;
+        }
         v->pending_wb++;
         submit(&k);
         ok = 1;

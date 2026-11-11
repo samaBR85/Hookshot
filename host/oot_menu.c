@@ -758,8 +758,11 @@ static Seen *screen_seen(uint64_t screen, int64_t now) {
     return free_one;
 }
 
+int hos_wheel_menu_tick(Ctx *c, uint64_t screen);   /* oot_wheel.c (wheel mod) */
+
 void hos_oot_menu_tick(Ctx *c, uint64_t screen) {
     if (!screen) return;
+    if (hos_wheel_menu_tick(c, screen)) return;   /* (wheel mod: the item row as the wheel, its own mouse) */
     if (trace < 0) trace = env_on("HOS_MENU_TRACE");
     const int64_t now = hos_now_ns();
     AcquireSRWLockExclusive(&seen_lock);
@@ -816,5 +819,6 @@ void hos_oot_menu_tick(Ctx *c, uint64_t screen) {
 }
 #else
 void hos_oot_menu_focus(Ctx *c, uint64_t screen, uint64_t pane, uint64_t lr) { (void)c, (void)screen, (void)pane, (void)lr; }
-void hos_oot_menu_tick(Ctx *c, uint64_t screen) { (void)c, (void)screen; }
+int hos_wheel_menu_tick(Ctx *c, uint64_t screen);   /* oot_wheel.c (wheel mod) */
+void hos_oot_menu_tick(Ctx *c, uint64_t screen) { if (screen) hos_wheel_menu_tick(c, screen); }
 #endif

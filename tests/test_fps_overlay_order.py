@@ -1,5 +1,6 @@
-"""The overlays (the start-up screen, the menu, the FPS counter) over the window's image: menu_record draws them with Dear ImGui
-in one frame and one recording, the start-up screen under the menu and the counter over both; nothing at all (no ImGui frame,
+"""The overlays (the start-up screen, the item wheel (wheel mod), the menu, the FPS counter) over the window's image: menu_record draws them with Dear ImGui
+in one frame and one recording, the start-up screen under the menu and the counter over both, the wheel over the start-up
+screen's place and under the menu (never with the start-up screen); nothing at all (no ImGui frame,
 no render pass, only ui::idle letting old textures go) while none shows (but one frame that bakes the glyphs after a resize), and no "0 FPS" over the start-up screen.
 
 python -I -B tests/test_fps_overlay_order.py [--cxx g++] [--source path/to/vk_menu.cpp]
@@ -53,16 +54,20 @@ bool prebake_needed(uint32_t, uint32_t) { return resized; }
 void draw_startup(ui::Ctx&) { calls += "s"; }
 void draw_menu(ui::Ctx&) { calls += "m"; }
 void draw_fps(ui::Ctx&, bool under_banner) { calls += under_banner ? "F" : "f"; }
+bool wheel_open = false;
+bool wheel_update() { return wheel_open; }
+void draw_wheel(ui::Ctx&) { calls += "w"; }
 ''' + fn + r'''
 int main() {
-    for (bool startup : {false, true}) for (bool fps : {false, true}) for (bool menu : {false, true}) for (bool can : {true, false}) {
+    for (bool startup : {false, true}) for (bool fps : {false, true}) for (bool menu : {false, true}) for (bool wheel : {false, true}) for (bool can : {true, false}) {
         opts.show_fps = fps;
+        wheel_open = wheel;
         open_now = menu;
         startup_on = startup;
         can_draw = can;
         calls.clear();
         menu_record(1, 2, 640, 360);
-        if (!startup && !fps && !menu) {   // (nothing shows: no ImGui frame at all, only the reaping; after a resize, one bake)
+        if (!startup && !fps && !menu && !(wheel && !startup)) {   // (nothing shows: no ImGui frame at all, only the reaping; after a resize, one bake)
             CHECK(calls == "i");
             calls.clear(), resized = true;
             menu_record(1, 2, 640, 360);
@@ -73,6 +78,7 @@ int main() {
         if (!can) { CHECK(calls == "b"); continue; }                           // (no ImGui here: nothing recorded)
         std::string want = "bp";
         if (startup) want += "s";
+        if (wheel && !startup) want += "w";
         if (menu) want += "m";
         if (fps && !startup) want += menu ? "F" : "f";
         want += "dr";   // (the recorder boundary right before the recording)

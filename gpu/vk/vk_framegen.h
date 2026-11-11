@@ -17,6 +17,14 @@ FgMaker framegen_maker();
 VkImage framegen_made_image(uint32_t* w, uint32_t* h);
 /// After that recording's submit (value): the display thread shows its frames
 void framegen_queue(uint64_t value);
+/// (wheel mod) The gameplay upscale's output (image, its view format, w x h at level, GENERAL), as the upscale left it: the
+/// scene before the game draws its HUD on it. Recorded into the frame's own work; the present's framegen_record then tells
+/// the HUD from the scene, interpolates the scene alone and puts the HUD of the nearest real frame back over the made ones
+/// (wheel mod) While the item wheel is open: the window texture's crop (dst, GENERAL, the game's RGBA8 picture) covered with
+/// the scene framegen_hudless last copied, before the HUD and dimmed, so the game's own item row and HUD don't show behind
+/// the wheel. False (nothing recorded) when the wheel is closed or the picture is not that scene's
+bool framegen_wheel_backdrop(VkCommandBuffer cmd, VkImage dst, VkFormat format, uint32_t sw, uint32_t sh, const int crop[4]);
+void framegen_hudless(VkCommandBuffer cmd, VkImage image, VkFormat format, uint32_t w, uint32_t h, uint32_t level);
 /// The window's present of an image (GENERAL, w x h; crop as above or null), vk_replay.cpp: the display thread's
 void present_image(VkImage src, uint32_t w, uint32_t h, const int crop[4], VkImageView view = VK_NULL_HANDLE);
 /// (hookshot) Present ahead (vk_framegen.cpp display_main, #1702): while present_defer_into is set on a thread, present_image

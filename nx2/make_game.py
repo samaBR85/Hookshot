@@ -2475,6 +2475,17 @@ def main(a=None):
              ([] if launcher else ["--incremental"]), check=False, output=sys.stderr):
         print("the button prompts of other controllers were not made: the game shows its own", flush=True)
         shutil.rmtree(prompts, ignore_errors=True)
+    # (wheel mod) the item wheel's icons and sounds (gpu/vk/vk_menu.cpp, host/nn_audio.c): the game's own item icons and item
+    # row sounds, from the RomFS. Without them the wheel shows the items' names and its scroll tick is silent
+    wheel = os.path.join(out, "wheel")
+    if importlib.util.find_spec("PIL") is None or importlib.util.find_spec("texture2ddecoder") is None:
+        print("the item wheel's icons were not made (no Pillow or texture2ddecoder): it shows the items' names", flush=True)
+    elif run(PY + [os.path.join(HERE, "wheel_icons.py"), "--romfs", romfs, "--out", os.path.join(wheel, "icons.bin")],
+             check=False, output=sys.stderr):
+        print("the item wheel's icons were not made: it shows the items' names", flush=True)
+    if run(PY + [os.path.join(HERE, "wheel_sounds.py"), "--romfs", romfs, "--out", os.path.join(wheel, "sounds.bin")],
+           check=False, output=sys.stderr):
+        print("the item wheel's sounds were not made: its scroll tick is silent", flush=True)
     icon = os.path.join(ROOT, "assets", "hookshot.png")
     if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
         copy_writable(icon, os.path.join(out, "hookshot.png"))   # (a second build overwrites the first's)

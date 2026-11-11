@@ -260,6 +260,50 @@ static void game_menu_press(LPARAM lp, LONG bit) {
     gm_mouse_used();
     pointer_publish_at(hwnd, at, (uint32_t)bit, 0);
 }
+/* (wheel mod) The item wheel (host/oot_wheel.c) for the mouse: while it is open the mouse is free and its pointer shown,
+   put in the wheel's middle as it opens; the item under it is picked, and a left click picks it and closes the wheel.
+   The capture it had comes back when the wheel closes. The input thread posts WM_APP + 20 (wParam 1 open, 0 closed) */
+static volatile LONG wheel_click, wheel_click_x, wheel_click_y;
+static int wheel_open_now, captured_before_wheel;
+
+void hos_wheel_mouse_open(int open) {
+    if (hwnd) PostMessageA(hwnd, WM_APP + 20, (WPARAM)(open != 0), 0);
+}
+
+/* the free pointer in client pixels and the client's size: 1 when it is over the window, the window in front and the
+   mouse not captured. *clicked: a left click since the last call (its place in *click_x, *click_y) */
+int hos_wheel_pointer(int32_t *x, int32_t *y, int32_t *w, int32_t *h, int *clicked, int32_t *click_x, int32_t *click_y) {
+    *clicked = (int)InterlockedExchange(&wheel_click, 0);
+    *click_x = wheel_click_x, *click_y = wheel_click_y;
+    AcquireSRWLockShared(&pointer.lock);   /* (the free mouse as the window's thread last published it: pointer_publish_at) */
+    const MkwVkPointer at = pointer.point;
+    const int active = pointer.active;
+    ReleaseSRWLockShared(&pointer.lock);
+    *x = at.x, *y = at.y, *w = at.width, *h = at.height;
+    return hwnd && !mouse_captured && active && at.width > 0 && at.height > 0 && GetForegroundWindow() == hwnd;
+}
+
+static void wheel_mouse(HWND w, int open) {
+    if (open == wheel_open_now) return;
+    wheel_open_now = open;
+    InterlockedExchange(&wheel_click, 0);
+    if (open) {
+        captured_before_wheel = (int)mouse_captured && !menu_open && !game_menu_open;
+        if (captured_before_wheel) {
+            mouse_capture(w, 0);
+            RECT rc;
+            GetClientRect(w, &rc);
+            POINT p = {rc.right / 2, rc.bottom / 2};
+            ClientToScreen(w, &p);
+            SetCursorPos(p.x, p.y);
+            pointer_update(w, 0, 0);   /* (the pointer published at the middle now, not where the capture had it) */
+        }
+    } else {
+        if (captured_before_wheel && !menu_open && !game_menu_open && GetForegroundWindow() == w) mouse_capture(w, 1);
+        captured_before_wheel = 0;
+    }
+}
+
 static void menu_press(HWND w, LPARAM lp, LONG bit) {   /* (a click while the menu is open: the menu's) */
     const POINT at = {(short)LOWORD(lp), (short)HIWORD(lp)};
     SetCapture(w);   /* a drag past the window edge still reaches it */
@@ -311,6 +355,9 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_APP + 10:   /* (a game menu opened: hos_mouse_game_menu) */
         if (!game_menu_open) menus_mouse(w, menu_open, 1);
         return 0;
+    case WM_APP + 20:   /* (wheel mod: the item wheel opened or closed, hos_wheel_mouse_open) */
+        wheel_mouse(w, (int)wp);
+        return 0;
     case WM_APP + 11:   /* (the game's menus closed: hos_mouse_game_menu_gone) */
         if (game_menu_open) menus_mouse(w, menu_open, 0);
         return 0;
@@ -355,7 +402,10 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_LBUTTONDOWN:
         if (menu_open) menu_press(w, lp, HOS_MOUSE_LEFT);
-        else if (game_menu_open) game_menu_press(lp, HOS_MOUSE_LEFT);
+        else if (wheel_open_now) {   /* (wheel mod: the wheel's click, not a capture) */
+            InterlockedExchange(&wheel_click_x, (short)LOWORD(lp)), InterlockedExchange(&wheel_click_y, (short)HIWORD(lp));
+            InterlockedExchange(&wheel_click, 1);
+        } else if (game_menu_open) game_menu_press(lp, HOS_MOUSE_LEFT);
         else if (renderer && !mouse_captured) mouse_capture(w, 1);
         return 0;
     case WM_KEYDOWN: {
