@@ -3417,7 +3417,9 @@ void draw_teleport(ui::Ctx& c) {
     snprintf(where, sizeof where, "%s · %s Link", area.title, tp_age ? "Adult" : "Kid");
     if (!narrow)
         help_box(c, hx0, hx1, help_top, oot_tp_places[place].label,
-                 "Choose Kid or Adult at the top of the list, then an area and a place. Travel asks before going.", nullptr, where,
+                 "Choose Kid or Adult at the top of the list, then an area and a place. Travel asks before going.",
+                 oot_tp_places[place].story ? "Reached in the game by a warp or a scene: arriving here may depend on how far the story is."
+                                            : nullptr, where,
                  0, false, hh + 18 * s, bar - 12 * s);
 
     // (a column of cards under a heading, scrolled to keep the chosen one in view; y0: the first card's top)
@@ -3435,7 +3437,8 @@ void draw_teleport(ui::Ctx& c) {
         if (std::fabs(want - at) < 0.5f) at = want;
         return at;
     };
-    auto card = [&](ImVec2 a, ImVec2 b, const char* text, bool chosen, bool focus, const char* right_text, int dot, int hit) {
+    auto card = [&](ImVec2 a, ImVec2 b, const char* text, bool chosen, bool focus, const char* right_text, int dot, int hit,
+                    const char* tag = nullptr) {
         // (chosen in the column with the focus: lit, the gold bar; chosen elsewhere: a gold edge, so the column shows its choice)
         const bool lit = chosen && focus;
         c.d->AddRectFilled(a, b, lit ? ui::kCellNameSel : ui::kCellName, 3 * s);
@@ -3454,6 +3457,7 @@ void draw_teleport(ui::Ctx& c) {
             else c.d->AddCircle(d, 3.5f * s, ui::kDim, 0, std::max(1.0f, s));
             end -= 16 * s;
         }
+        if (tag) end -= card_tag(c, end, my, tag) + 8 * s;   // (story: a place the game reaches by a warp or a scene)
         c.d->PushClipRect(a, ImVec2(end, b.y), true);
         ui::text_mid(c, lit ? c.f.strong : c.f.body, 16 * s, a.x + 14 * s, my, lit ? ui::kInkBright : ui::kInk, text);
         c.d->PopClipRect();
@@ -3515,7 +3519,7 @@ void draw_teleport(ui::Ctx& c) {
         if (y + card_h < list_top || y > bottom) continue;
         const int dot = teleport_has_capture(area.first + k) ? 1 : 0;
         card(ImVec2(px0, y), ImVec2(px1, y + card_h), oot_tp_places[area.first + k].label, k == tp_place, tp_focus == 1, nullptr, dot,
-             2000 + k);
+             2000 + k, oot_tp_places[area.first + k].story ? "story" : nullptr);
     }
     c.d->PopClipRect();
 
