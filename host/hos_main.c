@@ -910,7 +910,8 @@ static struct {
     uint64_t result;          /* (and the event manager's answer to the request: 0 seen when the map did not change) */
 } teleport;
 
-static struct { const char *banc, *start, *boot; } place_target;   /* (set: oot_teleport goes there instead) */
+static struct { const char *banc, *start, *boot; int carrier; } place_target;   /* (set: oot_teleport goes there instead;
+   carrier: by the empty DefaultParentEvent and the reserved next map, as the Fast Travel mod warps) */
 static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
     teleport.why = "no such destination", teleport.banc = NULL;
     if (index >= sizeof oot_destinations / sizeof oot_destinations[0]) return 0;
@@ -961,9 +962,19 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
     memcpy(A64_PTR(strings + 256), boot, strlen(boot) + 1);
 
     const char *event_env = getenv("HOS_OOT_TELEPORT_EVENT");
-    const char *event = event_env && *event_env ? event_env : "Dm_SY_BancChangeGo";
+    const int carrier = place_target.banc && place_target.carrier;
+    const char *event = carrier ? "DefaultParentEvent" : event_env && *event_env ? event_env : "Dm_SY_BancChangeGo";
     const char *starter_env = getenv("HOS_OOT_TELEPORT_STARTER");
-    const int with_starter = !(starter_env && !strcmp(starter_env, "0"));
+    const int with_starter = !carrier && !(starter_env && !strcmp(starter_env, "0"));
+    if (carrier) {   /* (the reserved strings are written once the request is taken: room for them in the game data's queue) */
+        const uint64_t mgr = oot_singleton(c, OOT_GAMEDATA_SLOT);
+        const int32_t cap = mgr ? (int32_t)recomp_load32(c, mgr + 1584) : 0;
+        if (!mgr || cap <= 0 || (int32_t)(recomp_load32(c, mgr + 1600) & 0xFFFFF) + 2 > cap) {
+            hos_log("cheats: teleport waits: the game data's text queue is full");
+            teleport.why = "the game is busy (its data queue is full)";
+            return 0;
+        }
+    }
 
     const Ctx saved = *c;
     const uint64_t arg = (c->x[31] - OOT_EVENT_ARG_SIZE - 0x100) & ~0xfULL;
@@ -977,10 +988,10 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
         if (!buf || strlen(event) + 1 > cap) ok = 0;
         else memcpy(A64_PTR(buf), event, strlen(event) + 1);
     }
-    ok = ok && oot_event_arg(c, arg, "NextBanc", 1, strings);
-    ok = ok && oot_event_arg(c, arg, "NextStartPos", 1, strings + 128);
-    ok = ok && oot_event_arg(c, arg, "BootEventName", 1, strings + 256);
-    ok = ok && oot_event_arg(c, arg, "IsCheckAir", 4, 0);
+    ok = ok && (carrier || oot_event_arg(c, arg, "NextBanc", 1, strings));
+    ok = ok && (carrier || oot_event_arg(c, arg, "NextStartPos", 1, strings + 128));
+    ok = ok && (carrier || oot_event_arg(c, arg, "BootEventName", 1, strings + 256));
+    ok = ok && (carrier || oot_event_arg(c, arg, "IsCheckAir", 4, 0));
     if (ok && with_starter) {   /* the starter actor (arg+0x1950), as OneShotEventMemberRequestEventByEventName sets it */
         c->x[31] = arg;
         c->x[0] = arg + 0x1950, c->x[1] = actor, c->x[2] = 0;
@@ -1002,6 +1013,23 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
         release_link(c);
     }
     *c = saved;
+    if (carrier && ok && (result & 1)) {   /* (Sequence_ReservedNextBanc and _StartPosName: the game's String64 setter,
+                                              (mgr, const char **value, hash), queued; the texts and their pointers stay) */
+        A64Fn set_string = a64_lookup(0x80d44e50ULL);
+        const uint64_t mgr = oot_singleton(c, OOT_GAMEDATA_SLOT);
+        if (set_string && mgr) {
+            recomp_store64(c, strings + 384, strings), recomp_store64(c, strings + 392, strings + 128);
+            const uint32_t hashes[2] = {0xee27bf71u, 0x0b570ab2u};
+            for (unsigned i = 0; i < 2; i++) {
+                c->x[31] = (saved.x[31] - 0x200) & ~0xfULL;
+                c->x[0] = mgr, c->x[1] = strings + 384 + 8 * i, c->x[2] = hashes[i], c->x[30] = 0;
+                set_string(c);
+                *c = saved;
+            }
+        } else {
+            hos_log("cheats: teleport: the game's String64 setter is not in this build: the warp stays where it is");
+        }
+    }
     /* (issues 2217, 2588) A map-hiding area can leave this saved flag set when a debug teleport skips its exit.
        Only clear it once the event manager takes the request; the destination may hide its own minimap.
        Use the game's Bool setter (mgr, value, hash): it queues the change for the live value AND the save's copy.
@@ -1101,7 +1129,7 @@ static int oot_travel_place(Ctx *c, uint64_t actor, unsigned index, int adult) {
         if (!strcmp(oot_tp_places[i].banc, p->banc) && oot_tp_places[i].spawn[0]) start = oot_tp_places[i].spawn;
     /* (the arrival event: a destination's own where it is this very arrival point (known good), else the place's (the game's
        ordinary arrival for it, or the plain one); another arrival point's event left the screen black) */
-    const char *boot = p->boot;
+    const char *boot = p->boot;   /* ("": no ordinary arrival: the carrier warp) */
     for (unsigned i = 0; i < sizeof oot_destinations / sizeof oot_destinations[0]; i++) {
         const OotDestination *d = &oot_destinations[i];
         if (d->child_banc && !strcmp(d->child_banc, p->banc) && !strcmp(d->child_start, start)) boot = d->child_boot;
@@ -1117,6 +1145,8 @@ static int oot_travel_place(Ctx *c, uint64_t actor, unsigned index, int adult) {
     hos_log("cheats: place '%s' (%s), %s%s: map %s at %s%s", p->label, p->key, adult ? "adult" : "child",
             switch_age ? " (age switched)" : "", p->banc, start, p->spawn[0] ? "" : ", then its position");
     place_target.banc = p->banc, place_target.start = start, place_target.boot = boot;
+    place_target.carrier = !boot[0];   /* (a warp's or a scene's point: arrived at as the Fast Travel mod does) */
+    if (place_target.carrier) boot = "", place_target.boot = "DefaultParentEvent";
     const int sent = oot_teleport(c, actor, 0);
     place_target.banc = NULL;
     if (!sent) {
