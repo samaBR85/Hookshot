@@ -5137,7 +5137,7 @@ void menu_tick() {
             if (code) {
                 if (const char* why = retake_conflict(code)) {   // (taken already: said, and still waiting)
                     snprintf(retake_help, sizeof retake_help, "%s is already used for %s. Press another one, or Esc to cancel.",
-                             retake_name(code), why);
+                             retake_name(code), i18n::tr(why));   // (the reason in the menu's language: the message is made of it)
                     retake_armed = false;
                 } else {
                     opts.retake_key = code, retake_listening = 0, retake_help_now(), save();
