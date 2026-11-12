@@ -127,7 +127,8 @@ void menu_option_set(int id, int value);   // (from the game's side: 7 the mouse
 int menu_setting(int index, MkwVkSetting* out);   // (the control bridge, host/control.c: the rows with a value)
 int menu_setting_set(const char* key, int value, MkwVkSetting* out);
 int menu_take_capture_request();   // (vk_replay.cpp: a map whose screenshot the Teleport page wants now, -1 none)
-void menu_store_capture(int map, const uint8_t* rgba, uint32_t w, uint32_t h);   // (that screenshot, RGBA: kept and saved)
+void menu_store_capture(int map, const uint8_t* rgba, uint32_t w, uint32_t h);   // (that screenshot, RGBA: handed to the menu's picture worker)
+bool menu_teleport_captures_on();   // (whether the Teleport page's screenshots are taken: the game side watches only then)
 int menu_heart_protection();
 int menu_player_flight();
 int menu_free_camera();

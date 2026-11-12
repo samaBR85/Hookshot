@@ -51,6 +51,9 @@ enum { HOS_OPT_FOV = 51 };
    and Navi waking Link. 44 stays reserved for Skip title, 49 and 50 for Walk, 60 for the item wheel. A new option id
    answered by the existing option callback does not change MkwVkHost or MkwVkRenderer.) */
 enum { HOS_OPT_SKIP_OPENING = 52 };
+/* (HOS_OPT_TELEPORT_PICTURES, 53: whether the Teleport page's screenshots are taken, gpu/vk/vk_menu.cpp; only while the Debug
+   tools are on. host/hos_main.c oot_capture_tick watches for Link settling in a map only then.) */
+enum { HOS_OPT_TELEPORT_PICTURES = 53 };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position (the bottom face button first:

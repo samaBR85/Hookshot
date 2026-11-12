@@ -17,6 +17,8 @@
 // closes the window as the player would, and the game starts again (WM_APP + 9: host/hos_relaunch.c).
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <cmath>
 #include <utility>
 #include <cstdio>
@@ -2572,7 +2574,7 @@ const char* retake_conflict(int code) {
 int retake_listening = 0;      // (1: Retake picture waits for its button)
 bool retake_armed = false;     // (once what started it was let go)
 constexpr const char* kTeleportPicturesLine =   // (the Teleport row's line under its help: where the pictures come from)
-    "Each place shows a picture from your own game, taken the first time Link stays there a few seconds.";
+    "Each place shows a picture from your own game, taken the first time Link stays at the location for a few seconds with this menu closed.";
 constexpr const char* kRetakeHelp = "Not happy with a place's picture?\nTake a new one where Link is standing.";
 constexpr const char* kRetakeTip = "Free camera reaches views Link can't.";   // (the Retake picture help's gold line)
 char retake_line[160] = "";   // (the line under Retake picture's help: how to use its button; none while it waits for one)
@@ -3583,22 +3585,25 @@ void draw_inventory(ui::Ctx& c) {
     ui::prompt_bar(c, prompts, prompts_n);   // (the prompts, on top of the help and the cards)
 }
 
-// (the Teleport page's pictures: teleport_captures.bin in the game folder, the screenshots taken in play (vk_replay.cpp), read
-// when the page is first drawn and kept in memory; nothing is shipped. One texture shows the chosen one, its pixels swapped when
-// the choice changes: the UI's descriptor pool holds 16 textures, not one a map)
+// (the Teleport page's pictures: the screenshots taken in play (vk_replay.cpp), one file a map in the game folder's
+// teleport_pictures folder; nothing is shipped. The files are read and written by a worker thread of their own (picture_worker),
+// never by the replay's, the game's or the menu's: a picture is 389 KB, and a present must not wait on a disk. One texture
+// shows the chosen one, its pixels swapped when the choice changes: the UI's descriptor pool holds 16 textures, not one a map)
 struct TeleportPicture {
     uint32_t w = 0, h = 0;
     std::vector<unsigned char> rgba;
 };
-std::map<std::string, TeleportPicture> teleport_captures;   // (by map; std::map: its nodes stay put)
-std::mutex teleport_captures_mu;   // (the captures come from the replay's thread)
-std::once_flag teleport_pictures_once;   // (read once, by whichever thread asks first)
+std::map<std::string, TeleportPicture> teleport_captures;   // (the maps read or taken; std::map: its nodes stay put)
+std::map<std::string, int> teleport_files;   // (by map: 1 its file being read, 2 read: in teleport_captures, or none on disk)
+std::mutex teleport_captures_mu;   // (both maps and teleport_tex_shows: the worker's thread and the menu's)
 std::atomic<int> teleport_capture_want{-1};
 std::atomic<int> teleport_map_now{-1};   // (the map Link is settled in, as the game side says: what a retake takes)
 std::atomic<int64_t> notice_until{0};   // (a line over the game while the menu is closed: a screenshot taken)
 char notice_text[96];
 ImTextureData* teleport_tex = nullptr;
 const TeleportPicture* teleport_tex_shows = nullptr;
+/// Screenshots are taken only for the people who use the page: while the Debug tools, the Teleport page's tab, are on
+bool teleport_captures_on() { return cheats_on(); }
 /// A file in the game folder, beside the executable (\\ on Windows, / on Linux: as ini_path), or "" (logged) when unknown
 std::string game_folder_file(const char* name) {
     char exe[MAX_PATH];
@@ -3611,54 +3616,158 @@ std::string game_folder_file(const char* name) {
     }
     return path.substr(0, slash + 1) + name;
 }
-/// The pictures of a 'FTP1' file: count, then { name[48], width, height, RGBA }
-void read_picture_file(const std::string& path, std::map<std::string, TeleportPicture>& into) {
+/// A map's picture file, teleport_pictures/<map>.bin in the game folder, or "" when the folder is unknown
+std::string teleport_picture_path(const std::string& map) {
+    const std::string dir = game_folder_file("teleport_pictures");
+    return dir.empty() ? "" : dir + "/" + map + ".bin";
+}
+// A picture file: 'FTP2', width, height, then its RGB (no alpha: a picture is opaque). 480x270: 389 KB
+constexpr char kPictureMagic[4] = {'F', 'T', 'P', '2'};
+bool read_picture_file(const std::string& path, TeleportPicture& p) {
     FILE* f = path.empty() ? nullptr : fopen(path.c_str(), "rb");
-    if (!f) return;
+    if (!f) return false;
     char magic[4];
-    uint32_t count = 0;
-    if (fread(magic, 1, 4, f) == 4 && !memcmp(magic, "FTP1", 4) && fread(&count, 4, 1, f) == 1 && count <= 256) {
-        for (uint32_t i = 0; i < count; ++i) {
-            char name[48];
-            uint32_t wh[2];
-            if (fread(name, 1, 48, f) != 48 || fread(wh, 4, 2, f) != 2 || !wh[0] || wh[0] > 2048 || !wh[1] || wh[1] > 2048) {
-                logf("menu: %s: picture %u of %u unreadable, the rest left out", path.c_str(), i + 1, count);
-                break;
-            }
-            name[47] = 0;
-            TeleportPicture p;
-            p.w = wh[0], p.h = wh[1];
-            p.rgba.resize((size_t)p.w * p.h * 4);
-            if (fread(p.rgba.data(), 1, p.rgba.size(), f) != p.rgba.size()) break;
-            into[name] = std::move(p);
-        }
+    uint32_t wh[2];
+    bool ok = fread(magic, 1, 4, f) == 4 && !memcmp(magic, kPictureMagic, 4) && fread(wh, 4, 2, f) == 2 && wh[0] &&
+              wh[0] <= 2048 && wh[1] && wh[1] <= 2048;
+    std::vector<unsigned char> rgb;
+    if (ok) {
+        rgb.resize((size_t)wh[0] * wh[1] * 3);
+        ok = fread(rgb.data(), 1, rgb.size(), f) == rgb.size();
     }
     fclose(f);
+    if (!ok) {
+        logf("menu: %s is no Teleport picture, left out", path.c_str());
+        return false;
+    }
+    p.w = wh[0], p.h = wh[1];
+    p.rgba.resize((size_t)p.w * p.h * 4);
+    for (size_t i = 0, n = (size_t)p.w * p.h; i < n; ++i)
+        p.rgba[i * 4] = rgb[i * 3], p.rgba[i * 4 + 1] = rgb[i * 3 + 1], p.rgba[i * 4 + 2] = rgb[i * 3 + 2], p.rgba[i * 4 + 3] = 255;
+    return true;
 }
-void read_teleport_pictures_now() {
+bool write_picture_file(const std::string& path, const TeleportPicture& p) {
+    if (path.empty()) return false;
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+    std::vector<unsigned char> rgb((size_t)p.w * p.h * 3);
+    for (size_t i = 0, n = (size_t)p.w * p.h; i < n; ++i)
+        rgb[i * 3] = p.rgba[i * 4], rgb[i * 3 + 1] = p.rgba[i * 4 + 1], rgb[i * 3 + 2] = p.rgba[i * 4 + 2];
+    FILE* f = fopen((path + ".tmp").c_str(), "wb");
+    if (!f) return false;
+    const uint32_t wh[2] = {p.w, p.h};
+    fwrite(kPictureMagic, 1, 4, f), fwrite(wh, 4, 2, f), fwrite(rgb.data(), 1, rgb.size(), f);
+    bool ok = !ferror(f);
+    ok = fclose(f) == 0 && ok;
+    if (ok) std::filesystem::rename(path + ".tmp", path, ec);   // (over the old one, on either platform)
+    return ok && !ec;
+}
+// The worker's jobs: read a map's file; Link has stayed in a map (its picture wanted when it has none, here or on disk); keep
+// and write a picture taken
+struct PictureJob {
+    enum Kind { Read, Arrived, Store } kind = Read;
+    int map = 0;
+    TeleportPicture pic;
+};
+std::mutex picture_jobs_mu;
+std::condition_variable picture_jobs_cv;
+std::deque<PictureJob> picture_jobs;
+/// The map's picture read into teleport_captures when its file is there; whether it has one now. On the worker
+bool picture_read_now(const std::string& map) {
+    {
+        std::lock_guard lk(teleport_captures_mu);
+        if (teleport_captures.count(map)) return true;
+        if (teleport_files[map] == 2) return false;
+    }
+    TeleportPicture p;
+    const bool have = read_picture_file(teleport_picture_path(map), p);
     std::lock_guard lk(teleport_captures_mu);
-    read_picture_file(game_folder_file("teleport_captures.bin"), teleport_captures);
-    logf("menu: Teleport pictures: %d screenshots", (int)teleport_captures.size());
+    if (have && !teleport_captures.count(map)) teleport_captures[map] = std::move(p);
+    teleport_files[map] = 2;
+    return teleport_captures.count(map) != 0;
 }
-void read_teleport_pictures() { std::call_once(teleport_pictures_once, read_teleport_pictures_now); }
-/// The picture destination i shows: the screenshot of its map for Link's age now (Travel keeps his age), else of the other
-/// age's map, else none (the page says one comes)
-const TeleportPicture* teleport_choose(int i) {
+void picture_worker() {
+    for (;;) {
+        PictureJob j;
+        {
+            std::unique_lock lk(picture_jobs_mu);
+            picture_jobs_cv.wait(lk, [] { return !picture_jobs.empty(); });
+            j = std::move(picture_jobs.front());
+            picture_jobs.pop_front();
+        }
+        const std::string map = oot_capture_maps[j.map];
+        if (j.kind == PictureJob::Read) {
+            picture_read_now(map);
+        } else if (j.kind == PictureJob::Arrived) {
+            if (!picture_read_now(map)) teleport_capture_want.store(j.map, std::memory_order_relaxed);
+        } else {
+            const bool saved = write_picture_file(teleport_picture_path(map), j.pic);
+            int count;
+            {
+                std::lock_guard lk(teleport_captures_mu);
+                TeleportPicture& p = teleport_captures[map];
+                p = std::move(j.pic);
+                teleport_files[map] = 2;
+                if (teleport_tex_shows == &p) teleport_tex_shows = nullptr;   // (sent again if it is the one shown)
+                count = (int)teleport_captures.size();
+            }
+            logf("menu: Teleport screenshot of %s taken (%d in memory)%s", map.c_str(), count, saved ? "" : "; not saved");
+            if (saved) {
+                snprintf(notice_text, sizeof notice_text, "Teleport picture saved");
+                notice_until.store(prof_now() + 2500000000LL, std::memory_order_relaxed);
+            }
+        }
+    }
+}
+void picture_job(PictureJob&& j) {
+    static std::once_flag started;
+    std::call_once(started, [] { std::thread(picture_worker).detach(); });   // (it lives as long as the game)
+    {
+        std::lock_guard lk(picture_jobs_mu);
+        picture_jobs.push_back(std::move(j));
+    }
+    picture_jobs_cv.notify_one();
+}
+/// Whether the map's file has been read; if it was never asked for, the worker is asked to. Under teleport_captures_mu
+bool teleport_file_read(const char* map) {
+    int& state = teleport_files[map];
+    if (state == 2) return true;
+    if (state == 0) {
+        state = 1;
+        for (int k = 0; k < OOT_CAPTURE_MAPS; ++k)
+            if (!strcmp(oot_capture_maps[k], map)) {
+                PictureJob j;
+                j.kind = PictureJob::Read, j.map = k;
+                picture_job(std::move(j));
+            }
+    }
+    return false;
+}
+//// The picture destination i shows: the screenshot of its map for Link's age now (Travel keeps his age), else of the other
+/// age's map, else none (the page says one comes). *reading: none yet because a file is still being read. Under
+/// teleport_captures_mu
+const TeleportPicture* teleport_choose(int i, bool* reading) {
     constexpr int kMaps = sizeof teleport_maps / sizeof teleport_maps[0];
+    *reading = false;
     if (i < 0 || i >= kMaps) return nullptr;
     const int first = link_age.load(std::memory_order_relaxed) == 1;
     for (int k = 0; k < 2; ++k)
         if (const char* map = teleport_maps[i][first ^ k]) {
             const auto it = teleport_captures.find(map);
             if (it != teleport_captures.end()) return &it->second;
+            if (!teleport_file_read(map)) return *reading = true, nullptr;   // (not the other age's while this one's comes)
         }
     return nullptr;
 }
-/// The picture of the map destination i arrives in, in the page's one texture, or null
-ImTextureData* teleport_picture(int i) {
-    read_teleport_pictures();
+/// The picture of the map destination i arrives in, in the page's one texture, or null (*reading: its file not read yet)
+ImTextureData* teleport_picture(int i, bool* reading) {
     std::lock_guard lk(teleport_captures_mu);
-    const TeleportPicture* pic = teleport_choose(i);
+    static bool asked = false;   // (the page's first frame: every map's file read by the worker, so moving down the list shows them)
+    if (!asked) {
+        asked = true;
+        for (int k = 0; k < OOT_CAPTURE_MAPS; ++k) teleport_file_read(oot_capture_maps[k]);
+    }
+    const TeleportPicture* pic = teleport_choose(i, reading);
     if (!pic) return nullptr;
     if (teleport_tex && (teleport_tex->Width != (int)pic->w || teleport_tex->Height != (int)pic->h)) {
         static const TeleportPicture* said = nullptr;   // (once a picture: the page is drawn every frame)
@@ -3740,7 +3849,8 @@ void draw_teleport(ui::Ctx& c) {
     const float bottom = std::max(top, detail - 6 * s), gap = 10 * s, pitch = 48 * s, head = 40 * s;
     const char* const note = teleport_notes[teleport_choice];
     float help_top = std::max(hh + 26 * s, c.h * .30f);
-    if (ImTextureData* pic = narrow ? nullptr : teleport_picture(teleport_choice)) {
+    bool reading = false;   // (the picture's file still being read: the empty frame, without its words, for those few frames)
+    if (ImTextureData* pic = narrow ? nullptr : teleport_picture(teleport_choice, &reading)) {
         // (the destination's picture in a box of its own above the help, a thin gold edge round it)
         const float pad = 12 * s, iw = hx1 - hx0 - 2 * pad, ih = iw * pic->Height / (float)pic->Width;
         const ImVec2 a(hx0, hh + 26 * s), b(hx1, hh + 26 * s + ih + 2 * pad);
@@ -3758,13 +3868,15 @@ void draw_teleport(ui::Ctx& c) {
         c.d->AddRectFilled(ia, ib, ui::kCellDark, 3 * s);   // (a place kept for the picture, not a hole onto the game)
         c.d->AddRect(ia, ib, ui::alpha(ui::kEdge, 0.8f), 3 * s, 0, std::max(1.0f, 1.5f * s));
         const float cx = (ia.x + ib.x) * 0.5f, cy = (ia.y + ib.y) * 0.5f;
-        ui::text_mid_centre(c, c.f.heading, 20 * s, cx, cy - 30 * s, ui::kInk, "No picture yet");
-        const float rule = 34 * s;   // (the sections' gold rule, a diamond in its middle)
-        c.d->AddLine(ImVec2(cx - rule - 9 * s, cy), ImVec2(cx - 9 * s, cy), ui::alpha(ui::kAccent, 0.8f), std::max(1.0f, s));
-        c.d->AddLine(ImVec2(cx + 9 * s, cy), ImVec2(cx + rule + 9 * s, cy), ui::alpha(ui::kAccent, 0.8f), std::max(1.0f, s));
-        ui::diamond(c, ImVec2(cx, cy), 4 * s, ui::kGoldHi);
-        balanced_centre(c, c.f.body, 15 * s, cx, cy + 26 * s, (ib.x - ia.x) * 0.7f, ui::kDim,
-                        "Taken the first time Link stays at this location for a few seconds.");
+        if (!reading) {
+            ui::text_mid_centre(c, c.f.heading, 20 * s, cx, cy - 30 * s, ui::kInk, "No picture yet");
+            const float rule = 34 * s;   // (the sections' gold rule, a diamond in its middle)
+            c.d->AddLine(ImVec2(cx - rule - 9 * s, cy), ImVec2(cx - 9 * s, cy), ui::alpha(ui::kAccent, 0.8f), std::max(1.0f, s));
+            c.d->AddLine(ImVec2(cx + 9 * s, cy), ImVec2(cx + rule + 9 * s, cy), ui::alpha(ui::kAccent, 0.8f), std::max(1.0f, s));
+            ui::diamond(c, ImVec2(cx, cy), 4 * s, ui::kGoldHi);
+            balanced_centre(c, c.f.body, 15 * s, cx, cy + 26 * s, (ib.x - ia.x) * 0.7f, ui::kDim,
+                            "Taken the first time Link stays at this location for a few seconds.");
+        }
         help_top = b.y + 14 * s;
     }
     if (!narrow)
@@ -4489,34 +4601,17 @@ int menu_take_capture_request() {
     const int want = teleport_capture_want.exchange(-1, std::memory_order_relaxed);
     return open_now.load(std::memory_order_relaxed) ? -1 : want;
 }
+/// The replay's thread, at a present: the screenshot's pixels copied and handed to the picture worker, which keeps and writes
+/// them. No file is touched here
 void menu_store_capture(int map, const uint8_t* rgba, uint32_t w, uint32_t h) {
     if (map < 0 || map >= OOT_CAPTURE_MAPS) return;
-    read_teleport_pictures();   // (the file's others first: it is written whole)
-    std::lock_guard lk(teleport_captures_mu);
-    TeleportPicture& p = teleport_captures[oot_capture_maps[map]];
-    p.w = w, p.h = h;
-    p.rgba.assign(rgba, rgba + (size_t)w * h * 4);
-    for (size_t i = 3; i < p.rgba.size(); i += 4) p.rgba[i] = 255;   // (opaque, whatever the picture's alpha held)
-    if (teleport_tex_shows == &p) teleport_tex_shows = nullptr;   // (sent again if it is the one shown)
-    const std::string path = game_folder_file("teleport_captures.bin");   // (all of them, written whole)
-    if (FILE* f = path.empty() ? nullptr : fopen((path + ".tmp").c_str(), "wb")) {
-        const uint32_t count = (uint32_t)teleport_captures.size();
-        fwrite("FTP1", 1, 4, f), fwrite(&count, 4, 1, f);
-        for (const auto& [name, c] : teleport_captures) {
-            char n[48] = {};
-            strncpy(n, name.c_str(), sizeof n - 1);
-            const uint32_t wh[2] = {c.w, c.h};
-            fwrite(n, 1, 48, f), fwrite(wh, 4, 2, f), fwrite(c.rgba.data(), 1, c.rgba.size(), f);
-        }
-        const bool ok = !ferror(f);
-        fclose(f);
-        std::error_code ec;
-        if (ok) std::filesystem::rename(path + ".tmp", path, ec);   // (over the old one, on either platform)
-    }
-    logf("menu: Teleport screenshot of %s taken (%d in all)", oot_capture_maps[map], (int)teleport_captures.size());
-    snprintf(notice_text, sizeof notice_text, "Teleport picture saved");
-    notice_until.store(prof_now() + 2500000000LL, std::memory_order_relaxed);
+    PictureJob j;
+    j.kind = PictureJob::Store, j.map = map;
+    j.pic.w = w, j.pic.h = h;
+    j.pic.rgba.assign(rgba, rgba + (size_t)w * h * 4);
+    picture_job(std::move(j));
 }
+bool menu_teleport_captures_on() { return teleport_captures_on(); }
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
 bool scene_tonemap_on() { return dev.hdr && opts.hdr == 2 && opts.hdr_tonemap == 1; }
 // (the tools off on the Debug tab: flight, the free camera and heart protection put away; -1, heart protection never set, is the
@@ -4609,10 +4704,10 @@ void menu_option_set(int id, int value) {
         return;
     }
     if (id == OOT_TP_CAPTURE_ID) {   // (Link has stayed in a map: its screenshot, when there is none yet and the menu is closed)
-        if (value < 0 || value >= OOT_CAPTURE_MAPS || open_now.load(std::memory_order_relaxed)) return;
-        read_teleport_pictures();
-        std::lock_guard lk(teleport_captures_mu);
-        if (!teleport_captures.count(oot_capture_maps[value])) teleport_capture_want.store(value, std::memory_order_relaxed);
+        if (value < 0 || value >= OOT_CAPTURE_MAPS || open_now.load(std::memory_order_relaxed) || !teleport_captures_on()) return;
+        PictureJob j;   // (whether it has one, here or on disk, the worker asks: the game's thread reads no file)
+        j.kind = PictureJob::Arrived, j.map = value;
+        picture_job(std::move(j));
         return;
     }
     if (id == OOT_CHEAT_AGE_ID) {   // (Link's age: the Switch age row shows it)
@@ -5004,7 +5099,7 @@ void menu_tick() {
         }
         if (now && !open_now.load()) {
             const int map = teleport_map_now.load(std::memory_order_relaxed);
-            if (map >= 0) teleport_capture_want.store(map, std::memory_order_relaxed), logf("menu: Teleport screenshot retaken");
+            if (map >= 0 && teleport_captures_on()) teleport_capture_want.store(map, std::memory_order_relaxed), logf("menu: Teleport screenshot retaken");
         }
     }
     pad_held = raw;

@@ -1281,13 +1281,20 @@ static int oot_flight_moved_away(Ctx *c, uint64_t actor, const float held[3]) {
 
 /* The Teleport page's own screenshots (gpu/vk/vk_menu.cpp): once Link has stayed 3 s in a map of oot_capture_maps, with no
    map loading and no event playing, the menu is told (OOT_TP_CAPTURE_ID); it takes the picture if it has none of that map
-   yet. Told again only after another map. Runs with the player's update, which stops while the game is paused. */
+   yet. Told again only after another map. Runs with the player's update, which stops while the game is paused; and only
+   while the menu takes screenshots (the Debug tools on: HOS_OPT_TELEPORT_PICTURES), so no one else's game folder
+   gets pictures for a page they never open. */
 static void oot_capture_tick(Ctx *c, int64_t now) {
+    int rx_option(int id, int otherwise);
     void rx_option_set(int id, int value);
     static char banc[64];
     static int64_t since;
     static int told = 1;
     char now_banc[64];
+    if (!rx_option(HOS_OPT_TELEPORT_PICTURES, 0)) {
+        if (banc[0]) banc[0] = 0, rx_option_set(OOT_TP_MAP_ID, -1);   /* (switched on again: the map Link is in starts over) */
+        return;
+    }
     if (!oot_gamedata_string(c, 0x1d6189dau, now_banc, sizeof now_banc) || !now_banc[0]) return;   /* Sequence_CurrentBanc */
     int loading = 0;
     const uint64_t events = oot_singleton(c, OOT_EVENTMGR_SLOT);
