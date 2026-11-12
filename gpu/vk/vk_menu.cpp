@@ -1381,7 +1381,7 @@ Row rows[] = {
     {TAB_DEBUG, "Free camera", nullptr, 0, 0, 0, nullptr,
      "Move and look with your usual controls. Page Up / Page Down or R / L changes height.", nullptr, false, true, 7},
     {TAB_DEBUG, "Teleport", nullptr, 0, 0, 0, nullptr,
-     "Opens the map list. Link travels through the game's own map change, in his current age.", nullptr, false, true, 8},
+     "Opens the list of places.\nPick one to go straight to its entrance; Link keeps his age.", nullptr, false, true, 8},
     {TAB_DEBUG, "Retake picture", nullptr, 0, 0, 0, nullptr, retake_help, nullptr, false, true, 13},
     {TAB_DEBUG, "Switch age", nullptr, 0, 0, 0, nullptr,
      "Swaps Link between child and adult and reloads this map in the other age (the Market when this map has no match).", nullptr, false, true, 9},
@@ -2571,16 +2571,18 @@ const char* retake_conflict(int code) {
 }
 int retake_listening = 0;      // (1: Retake picture waits for its button)
 bool retake_armed = false;     // (once what started it was let go)
+constexpr const char* kTeleportPicturesLine =   // (the Teleport row's line under its help: where the pictures come from)
+    "Each place shows a picture from your own game, taken the first time Link stays there a few seconds.";
+constexpr const char* kRetakeHelp = "Not happy with a place's picture?\nTake a new one where Link is standing.";
+constexpr const char* kRetakeTip = "Free camera reaches views Link can't.";   // (the Retake picture help's gold line)
+char retake_line[160] = "";   // (the line under Retake picture's help: how to use its button; none while it waits for one)
 void retake_help_now() {
     if (retake_listening) snprintf(retake_help, sizeof retake_help, "Press the key, mouse button or controller button to use. "
                                    "Esc cancels, Delete clears.");
-    else if (!opts.retake_key)
-        snprintf(retake_help, sizeof retake_help, "The Teleport list shows a picture of each place, taken from your own game the "
-                 "first time Link stays there a few seconds. Choose a button here to take a new one.");
-    else
-        snprintf(retake_help, sizeof retake_help, "The Teleport list shows a picture of each place, taken from your own game the "
-                 "first time Link stays there a few seconds. Press %s in play for a new one of where you are.",
-                 retake_name(opts.retake_key));
+    else snprintf(retake_help, sizeof retake_help, "%s", kRetakeHelp);
+    if (retake_listening) retake_line[0] = 0;
+    else if (!opts.retake_key) snprintf(retake_line, sizeof retake_line, "Choose a button here, then press it in play.");
+    else snprintf(retake_line, sizeof retake_line, "Press %s in play to take it.", retake_name(opts.retake_key));
 }
 int page = 0;          // 0 the options, 1 the controls, 3 the teleport list, 4 the inventory, 5 the restart question (2: was the
                        // debug tools' own page, now on the Debug tab)
@@ -2732,16 +2734,17 @@ float title_banner(ui::Ctx& c, const char* title, const char* right) {
     if (right) ui::text_mid_right(c, c.f.body, 17 * s, c.w - c.safe, hh * 0.5f + s, ui::kBannerInk, right);
     return hh;
 }
-/// The help box from (x0, y0) to x1: a title, the help, a line set off by a bar, a gold line at its foot. min_h: its height at
-/// least (the tallest help the page can have, so it does not jump)
+/// The help box from (x0, y0) to x1: a title, the help, a line set off by a bar, a tip (a gold line under the text), a gold
+/// line at its foot. min_h: its height at least (the tallest help the page can have, so it does not jump)
 void help_box(ui::Ctx& c, float x0, float x1, float y0, const char* title, const char* help, const char* hint, const char* gold_line,
-              float min_h = 0, bool after_restart = false, float y_min = 0, float y_max = FLT_MAX) {
+              float min_h = 0, bool after_restart = false, float y_min = 0, float y_max = FLT_MAX, const char* tip = nullptr) {
     // (y_max: the box ends above it, the prompt strip's top: moved up as far as y_min (under the banner) when it is taller than
     // the room below y0, its reserved height (min_h) given up first, its text cut at its foot only if it still does not fit)
     const float s = c.s, w = x1 - x0 - 48 * s;
     const float th = help ? ui::para(c, c.f.body, 18 * s, ImVec2(), 0, help, w, false) : 0,
                 hh = hint ? ui::para(c, c.f.body, 16 * s, ImVec2(), 0, hint, w - 18 * s, false) : 0;
-    const float text_h = th + (hint ? (help ? 14 * s : 0) + hh : 0), note = after_restart ? 30 * s : 0;   // (no help: the hint in its place)
+    const float words_h = th + (hint ? (help ? 14 * s : 0) + hh : 0), note = after_restart ? 30 * s : 0;   // (no help: the hint in its place)
+    const float text_h = words_h + (tip ? 52 * s : 0);   // (the tip in the text's room: the box keeps its height)
     const float fixed = 22 * s + (title ? 32 * s : 0) + note + (gold_line ? 52 * s : 0) + 22 * s;
     float body = std::max(min_h, text_h);
     if (y0 + fixed + body > y_max) y0 = std::max(y_min, y_max - fixed - body);
@@ -2761,6 +2764,12 @@ void help_box(ui::Ctx& c, float x0, float x1, float y0, const char* title, const
         const float hy = y + (help ? th + 14 * s : 0);
         c.d->AddRectFilled(ImVec2(x0 + 24 * s, hy + 2 * s), ImVec2(x0 + 26.5f * s, hy + hh - 2 * s), ui::kAccent, s);
         ui::para(c, c.f.body, 16 * s, ImVec2(x0 + 40 * s, hy), ui::kSoft, hint, w - 18 * s);
+    }
+    if (tip) {
+        const float ty = y + words_h + 20 * s;
+        c.d->AddLine(ImVec2(x0 + 24 * s, ty), ImVec2(x1 - 24 * s, ty), ui::alpha(ui::kEdge, 0.8f), std::max(1.0f, s));
+        ui::diamond(c, ImVec2(x0 + 29 * s, ty + 20 * s), 4 * s, ui::kGoldHi);
+        ui::text_mid(c, c.f.strong, 16 * s, x0 + 42 * s, ty + 20 * s, ui::kGoldHi, tip);
     }
     if (gold_line) {
         y += body + 20 * s;
@@ -3177,7 +3186,10 @@ void draw_options(ui::Ctx& c) {
     const char* hint = selr.value && selr.hint ? selr.hint(*selr.value, -1) : nullptr;
     if (is_share_row(selr) && !share_said.empty()) hint = share_said.c_str();   // (what the last save did)
     if (&selr == &rows[kBugReportRow]) hint = bug_report_hint();   // (the Bug report: where it was saved, or why not)
+    if (cur_tab == TAB_DEBUG && selr.cheat == 8) hint = kTeleportPicturesLine;
+    if (cur_tab == TAB_DEBUG && selr.cheat == 13 && retake_line[0]) hint = retake_line;
     const std::string pending_line = (cur_tab == TAB_GRAPHICS || cur_tab == TAB_DEBUG) && restart_pending() ? restart_line(c, 16 * s, hx1 - hx0 - 66 * s) : "";
+    const char* tip = cur_tab == TAB_DEBUG && selr.cheat == 13 && !retake_listening ? kRetakeTip : nullptr;
     static float help_tall = 0, help_tall_w = 0;
     static std::string help_said;   // (Save my pipeline list's line as measured: measured again when it changes)
     if (help_tall_w != hx1 - hx0 || help_said != share_said)
@@ -3210,10 +3222,10 @@ void draw_options(ui::Ctx& c) {
                                       (bottom - hh) * 0.5f);
         bottom = std::min(bar_top, c.h - c.safe) - help_h - 16 * s;
         help_box(c, hx0, hx1, bottom + 8 * s, selr.name, selr.help, hint, pending_line.empty() ? nullptr : pending_line.c_str(), help_tall,
-                 after, bottom + 8 * s, bar_top - 10 * s);
+                 after, bottom + 8 * s, bar_top - 10 * s, tip);
     } else {
         help_box(c, hx0, hx1, std::max(hh + 26 * s, c.h * 0.30f), selr.name, selr.help, hint,
-                 pending_line.empty() ? nullptr : pending_line.c_str(), help_tall, after, hh + 18 * s, bar_top - 12 * s);
+                 pending_line.empty() ? nullptr : pending_line.c_str(), help_tall, after, hh + 18 * s, bar_top - 12 * s, tip);
     }
     const float rh = 40 * s, pitch = 48 * s, top = hh + 24 * s, rx0 = cx0 + 44 * s, rx1 = cx1 - 44 * s, split = rx0 + (rx1 - rx0) * 0.55f;
     if (cur_tab == TAB_DEBUG) {   // (the Debug tab: its own layout of the same rows)
