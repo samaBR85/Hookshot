@@ -874,13 +874,19 @@ A save whose minimap stopped showing after a Teleport on an earlier build (the a
 stayed set in the save) is mended by the Teleport itself: teleport to an outdoor area, wait until you can move, then
 save from the game's System menu. The minimap then stays after a restart.
 
-The Teleport list shows a picture of the chosen destination above its help, taken from your own game: the first time Link
-stays a few seconds in a place, with no map loading and no cutscene, Hookshot keeps a screenshot of it in
-`teleport_captures.bin` in the game folder (nothing is shipped or sent anywhere). It shows the picture for Link's current
-age, or the other age's when there is only that one. To replace a picture, choose a button in **Retake picture** (a key, a
-mouse button or a controller button the game and Hookshot don't already use), then press it in play: the screenshot is
-taken again where you are. **Free camera** with a retake gets views Link can't reach. Delete `teleport_captures.bin` to
-start over.
+The Teleport page lists 190 places by region, with Kid or Adult at the top (or the controller's X): an area, then its
+places (Market, Temple of Time, Shooting Gallery ...), each arrived at the game's own arrival point, in the age chosen. Travel
+asks before going. The list follows the Fast Travel mod's (MIT, by its author; the regions and names after the Zelda Wiki);
+the build reads each place's position and arrival event from your own dump (`nx2/teleport_places.py`, into
+`teleport_places.bin` in the game folder), so no game data is in the repository. A place tagged *story* is one the game
+reaches only by a warp or a scene: arriving there may depend on how far the story is.
+
+Each place shows a picture taken from your own game: the first time Link stays a few seconds near it, with no map loading
+and no cutscene, Hookshot keeps a screenshot of it in `teleport_captures.bin` in the game folder (nothing is shipped or sent
+anywhere); a gold dot marks the places that have one. To replace a picture, choose a button in **Retake picture** (a key, a
+mouse button or a controller button the game and Hookshot don't already use), then press it in play: the screenshot of the
+place nearest Link is taken again. **Free camera** with a retake gets views Link can't reach. Delete
+`teleport_captures.bin` to start over.
 
 `RX_VK_UI_GAME_FONT=0` draws the menu with the included font (Libertinus) even when the game's files have the game's own
 menu font. `RX_VK_UI_PROMPTS=pad` (or `keys`) shows the controller's (or the keyboard's) prompts whatever was used last,
