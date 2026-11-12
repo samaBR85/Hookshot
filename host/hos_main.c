@@ -1099,11 +1099,13 @@ static int oot_travel_place(Ctx *c, uint64_t actor, unsigned index, int adult) {
     const char *start = p->spawn;
     for (int i = 0; !start[0] && i < OOT_TP_PLACES; i++)
         if (!strcmp(oot_tp_places[i].banc, p->banc) && oot_tp_places[i].spawn[0]) start = oot_tp_places[i].spawn;
-    const char *boot = "Dm_SY_BancChangeArrive";
+    /* (the arrival event: a destination's own where it is this very arrival point (known good), else the place's (the game's
+       ordinary arrival for it, or the plain one); another arrival point's event left the screen black) */
+    const char *boot = p->boot;
     for (unsigned i = 0; i < sizeof oot_destinations / sizeof oot_destinations[0]; i++) {
         const OotDestination *d = &oot_destinations[i];
-        if (d->child_banc && !strcmp(d->child_banc, p->banc)) boot = d->child_boot;
-        else if (d->adult_banc && !strcmp(d->adult_banc, p->banc)) boot = d->adult_boot;
+        if (d->child_banc && !strcmp(d->child_banc, p->banc) && !strcmp(d->child_start, start)) boot = d->child_boot;
+        else if (d->adult_banc && !strcmp(d->adult_banc, p->banc) && !strcmp(d->adult_start, start)) boot = d->adult_boot;
     }
     int child = 1;
     const int known = oot_gamedata_bool(c, 0xcea220d3u, &child);

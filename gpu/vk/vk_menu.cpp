@@ -1133,6 +1133,23 @@ const std::vector<int>& tp_areas_of(int age) {
 }
 int teleport_map_now_value();
 const OotTpArea& tp_area_now() { return oot_tp_areas[tp_areas_of(tp_age)[tp_area[tp_age]]]; }
+/// Kid or Adult: the same area and place in that age's list when it has them (by name), else that age's own choice
+void tp_set_age(int age) {
+    if (age == tp_age) return;
+    const OotTpArea& was = tp_area_now();
+    const char* label = oot_tp_places[was.first + std::clamp(tp_place, 0, was.count - 1)].label;
+    const auto& areas = tp_areas_of(age);
+    tp_age = age;
+    for (int k = 0; k < (int)areas.size(); ++k) {
+        const OotTpArea& a = oot_tp_areas[areas[k]];
+        if (strcmp(a.title, was.title)) continue;
+        tp_area[age] = k, tp_place = 0;
+        for (int i = 0; i < a.count; ++i)
+            if (!strcmp(oot_tp_places[a.first + i].label, label)) tp_place = i;
+        return;
+    }
+    tp_place = 0;
+}
 int tp_place_now() { return tp_area_now().first + std::clamp(tp_place, 0, tp_area_now().count - 1); }
 /// The page opens on Link's age and the area and place he is at (the game side's nearest place), or as it was left
 void tp_open() {
@@ -3264,20 +3281,20 @@ void read_teleport_pictures_now() {
     logf("menu: Teleport pictures: %d screenshots", (int)teleport_captures.size());
 }
 void read_teleport_pictures() { std::call_once(teleport_pictures_once, read_teleport_pictures_now); }
-/// The picture place i shows: its screenshot, else one of its map taken before pictures were per place, else none (the page
-/// says one comes)
+/// The picture place i shows: its screenshot; for the old Teleport's arrival place (legacy), its map's picture taken before
+/// pictures were per place; else none (the page says one comes)
 const TeleportPicture* teleport_choose(int i) {
     if (i < 0 || i >= OOT_TP_PLACES) return nullptr;
     const OotTpPlace& place = oot_tp_places[i];
     auto it = teleport_captures.find(place.key);
-    if (it == teleport_captures.end()) it = teleport_captures.find(place.banc);
+    if (it == teleport_captures.end() && place.legacy) it = teleport_captures.find(place.banc);
     return it != teleport_captures.end() ? &it->second : nullptr;
 }
 /// Whether place i has a screenshot (the gold dot in its card)
 bool teleport_has_capture(int i) {
     read_teleport_pictures();
     std::lock_guard lk(teleport_captures_mu);
-    return teleport_captures.count(oot_tp_places[i].key) || teleport_captures.count(oot_tp_places[i].banc);
+    return teleport_captures.count(oot_tp_places[i].key) || (oot_tp_places[i].legacy && teleport_captures.count(oot_tp_places[i].banc));
 }
 /// The picture of place i, in the page's one texture, or null
 ImTextureData* teleport_picture(int i) {
@@ -4267,7 +4284,9 @@ void menu_option_set(int id, int value) {
         if (value < 0 || value >= OOT_TP_PLACES || open_now.load(std::memory_order_relaxed)) return;
         read_teleport_pictures();
         std::lock_guard lk(teleport_captures_mu);
-        if (!teleport_captures.count(oot_tp_places[value].key)) teleport_capture_want.store(value, std::memory_order_relaxed);
+        const OotTpPlace& place = oot_tp_places[value];   // (a picture of its own, or its map's old one where that is of it)
+        if (!teleport_captures.count(place.key) && !(place.legacy && teleport_captures.count(place.banc)))
+            teleport_capture_want.store(value, std::memory_order_relaxed);
         return;
     }
     if (id == OOT_CHEAT_AGE_ID) {   // (Link's age: the Switch age row shows it)
@@ -4420,7 +4439,7 @@ void teleport_mouse(const MkwVkPointer& ptr, int mx, int my, bool* press, bool& 
         if (tp_asking) {
             if (hit.part == menu_hit::kButton && hit.index >= 10 && hit.index <= 11) tp_ask_sel = hit.index - 10, press[7] = true;
         } else if (hit.part == menu_hit::kListLine && hit.index >= 3000) {
-            tp_age = hit.index - 3000, tp_on_age = true, tp_focus = 0, tp_place = 0, changed = true;
+            tp_set_age(hit.index - 3000), tp_on_age = true, tp_focus = 0, changed = true;
         } else if (hit.part == menu_hit::kListLine && hit.index >= 2000) {
             const int k = hit.index - 2000;
             if (tp_focus == 1 && tp_place == k) press[7] = true;
@@ -4871,7 +4890,7 @@ void menu_tick() {
                 changed = true;
             }
         } else if (tp_age_button) {   // (X: the other age's areas, the area and place kept where the other list has them)
-            tp_age ^= 1, tp_place = 0, tp_on_age = false, changed = true;
+            tp_set_age(tp_age ^ 1), tp_on_age = false, changed = true;
         } else if (press[5]) {
             page = 0, changed = true;   // (to the Debug tab, Teleport still selected)
         } else if (tab_left || tab_right) {   // (the first area of the previous or next region)
@@ -4887,7 +4906,7 @@ void menu_tick() {
             }
             tp_area[tp_age] = k, tp_place = 0, tp_focus = 0, tp_on_age = false, changed = true;
         } else if (tp_focus == 0 && tp_on_age) {   // (Kid | Adult: Left Kid, Right Adult, Down to the areas)
-            if ((press[3] && tp_age) || (press[4] && !tp_age)) tp_age = press[4] ? 1 : 0, tp_place = 0, changed = true;
+            if ((press[3] && tp_age) || (press[4] && !tp_age)) tp_set_age(press[4] ? 1 : 0), changed = true;
             if (press[2] || press[7]) tp_on_age = false, changed = true;
         } else if (tp_focus == 0) {   // (the areas: Up and Down; Up past the first, Kid | Adult; Right or confirm, its places)
             const int was = tp_area[tp_age];
