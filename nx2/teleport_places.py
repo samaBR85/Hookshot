@@ -22,7 +22,6 @@ import re
 import struct
 import sys
 
-import zstandard
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLACES = os.path.join(HERE, "..", "gpu", "vk", "oot_tp_places.h")
@@ -31,6 +30,7 @@ LINKED = ("HorsePos", "BackPos", "FieldDungeonEntranceGo")   # (the anchors an a
 
 def zs_dictionary(romfs, name):
     """A dictionary out of Pack/ZsDic.pack.zs (a SARC, itself zstd without a dictionary), by its name"""
+    import zstandard
     with open(os.path.join(romfs, "Pack", "ZsDic.pack.zs"), "rb") as f:
         b = zstandard.ZstdDecompressor().decompressobj().decompress(f.read())
     data, = struct.unpack_from("<I", b, 12)
@@ -104,6 +104,7 @@ def main():
     ap.add_argument("--romfs", required=True)
     ap.add_argument("--out", required=True, help="the game folder")
     a = ap.parse_args()
+    import zstandard
     decompress = zstandard.ZstdDecompressor(dict_data=zstandard.ZstdCompressionDict(zs_dictionary(a.romfs, "bcett.byml.zsdic")))
     maps, out, missing = {}, [], []
     # (every map's entrances: the arrival events they play at each (map, arrival point), and which points any leads to)

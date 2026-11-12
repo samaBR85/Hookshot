@@ -1123,6 +1123,7 @@ bool tp_on_age = false, tp_asking = false;
 int tp_ask_sel = 0;   // (the question's button: 0 Travel, 1 Cancel)
 int tp_pad_x = 2;     // (the pad button the game's X is bound to, its position: Kid / Adult on the Teleport page)
 float tp_scroll[2] = {0, 0};   // (the two columns' scroll, eased)
+float tp_free[2] = {-1, -1};  // (a column the wheel scrolled: where to, the choice not followed until it moves; -1 follows)
 /// The areas of an age, as indices into oot_tp_areas
 const std::vector<int>& tp_areas_of(int age) {
     static std::vector<int> of[2];
@@ -3437,7 +3438,10 @@ void draw_teleport(ui::Ctx& c) {
     auto scroll_to = [&](int col, float total, float view, float y0, float y1) {
         float& at = tp_scroll[col];
         float want = at;
+        if (teleport_wheel && col == tp_focus)   // (the wheel: this column moves, the choice stays)
+            tp_free[col] = (tp_free[col] < 0 ? at : tp_free[col]) - teleport_wheel * pitch, teleport_wheel = 0;
         if (total <= view) want = 0;
+        else if (tp_free[col] >= 0) want = tp_free[col] = std::clamp(tp_free[col], 0.0f, total - view);
         else {
             if (y0 < want) want = y0;
             if (y1 > want + view) want = y1 - view;
@@ -4466,7 +4470,7 @@ void teleport_mouse(const MkwVkPointer& ptr, int mx, int my, bool* press, bool& 
         }
     }
     if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
-    if (ptr.wheel) press[ptr.wheel > 0 ? 1 : 2] = true;
+    if (ptr.wheel) teleport_wheel += ptr.wheel, changed = true;
 }
 /// A debug tool's row on the Debug tab (Row::cheat i): Left and Right, and confirm (press[7]: A, Enter, a click). Teleport and
 /// Inventory open their pages; back from them comes to the Debug tab, the row still selected
@@ -4880,6 +4884,7 @@ void menu_tick() {
             if (item_choice != chosen) inventory_reveal();   // (a click on a card: its page)
         }
     } else if (open_now.load() && page == 3) {   // the Teleport page
+        const int chose[3] = {tp_age, tp_area[tp_age], tp_place};
         if (mouse) teleport_mouse(ptr, mx, my, press, changed);
         bool tp_age_button = false;   // (Kid / Adult: the controller's X as the game has it bound, or the X key)
         {
@@ -4941,6 +4946,7 @@ void menu_tick() {
             if (press[7]) tp_asking = true, tp_ask_sel = 0;
             changed |= tp_place != was || press[3] || press[7];
         }
+        if (chose[0] != tp_age || chose[1] != tp_area[tp_age] || chose[2] != tp_place) tp_free[0] = tp_free[1] = -1;
     } else if (open_now.load()) {
         if (mouse) {   // (the mouse: see the top of this file)
             const menu_hit::Hit hit = hits.at((float)mx, (float)my);

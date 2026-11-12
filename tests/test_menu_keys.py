@@ -317,7 +317,9 @@ def main():
         raise SystemExit("FAIL: vk_menu.cpp: the debug tools' old page is still reached")
     for page in ("4", "3"):
         block = tick[tick.index("open_now.load() && page == %s" % page):]
-        need(block[:1500], r"if \(press\[5\]\) page = 0", "back from page %s does not return to the Debug tab" % page)
+        # (the Teleport page: back closes its Travel question first, then returns)
+        need(block[:3000], r"if \(press\[5\]\) page = 0|else if \(press\[5\]\) \{\s*page = 0",   # (its X and question first)
+             "back from page %s does not return to the Debug tab" % page)
     need(menu, r'\{TAB_DEBUG, "Developer", nullptr, 0, 0, 0, nullptr, nullptr, nullptr, false, true, -1, true\}',
          "the Debug tab has no Developer heading")
     for name in ("Descriptor reuse", "Sampler cache", "Robust buffers", "ASTC as RGBA8"):
