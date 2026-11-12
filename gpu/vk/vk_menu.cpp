@@ -3414,7 +3414,7 @@ void draw_teleport(ui::Ctx& c) {
         help_top = b.y + 14 * s;
     }
     char where[128];
-    snprintf(where, sizeof where, "%s · %s Link", area.title, tp_age ? "Adult" : "Kid");
+    snprintf(where, sizeof where, "%s · %s", area.title, i18n::tr(tp_age ? "Adult Link" : "Kid Link"));
     if (!narrow)
         help_box(c, hx0, hx1, help_top, oot_tp_places[place].label,
                  "Choose Kid or Adult at the top of the list, then an area and a place. Travel asks before going.",
