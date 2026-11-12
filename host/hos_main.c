@@ -17,6 +17,7 @@
 #include "../gpu/vk/vk_api.h"
 #include "../gpu/vk/oot_cheat_items.h"
 #include "../gpu/vk/oot_teleport_capture.h"
+#include "../gpu/vk/oot_tp_places_data.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -909,6 +910,7 @@ static struct {
     uint64_t result;          /* (and the event manager's answer to the request: 0 seen when the map did not change) */
 } teleport;
 
+static struct { const char *banc, *start, *boot; } place_target;   /* (set: oot_teleport goes there instead) */
 static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
     teleport.why = "no such destination", teleport.banc = NULL;
     if (index >= sizeof oot_destinations / sizeof oot_destinations[0]) return 0;
@@ -942,6 +944,7 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
     const char *banc = child ? d->child_banc : d->adult_banc;
     const char *start = child ? d->child_start : d->adult_start;
     const char *boot = child ? d->child_boot : d->adult_boot;
+    if (place_target.banc) banc = place_target.banc, start = place_target.start, boot = place_target.boot;
     if (!banc) {
         hos_log("cheats: teleport %u has no %s map", index, child ? "child" : "adult");
         teleport.why = child ? "this destination has no map for the child" : "this destination has no map for the adult";
@@ -1078,6 +1081,51 @@ static void oot_toggle_age(Ctx *c, uint64_t actor) {
         oot_gamedata_set_bool(c, 0xcea220d3u, child);
         hos_log("cheats: age toggle undone, the map change was not requested");
     }
+}
+
+/* The Teleport places' data from the player's dump (teleport_places.bin, nx2/teleport_places.py), read once */
+static const OotTpPlaceData *oot_places_data(void) {
+    static OotTpPlaceData data[OOT_TP_PLACES];
+    static int read;
+    if (!read) {
+        read = 1;
+        char path[MAX_PATH + 32];
+        const DWORD n = hos_game_path_a(path, MAX_PATH);
+        char *slash = n ? strrchr(path, SEP) : NULL;
+        if (slash) snprintf(slash + 1, (size_t)(path + sizeof path - slash - 1), "teleport_places.bin");
+        const int found = slash ? oot_tp_places_read(path, data) : 0;
+        hos_log("cheats: Teleport places: %d of %d from teleport_places.bin%s", found, OOT_TP_PLACES,
+                found ? "" : " (none: the places arrive with the plain event, no screenshots taken)");
+    }
+    return data;
+}
+
+/* A Teleport place (gpu/vk/oot_tp_places.h) in the age asked for: Sequence_IsChildhood set first when it differs (as the age
+   toggle does), then the map change to the place's arrival point with its arrival event (a destination's own where it is that
+   very point, else the dump's; another point's event left the screen black) */
+static int oot_travel_place(Ctx *c, uint64_t actor, unsigned index, int adult) {
+    if (index >= (unsigned)OOT_TP_PLACES) return 0;
+    const OotTpPlace *p = &oot_tp_places[index];
+    const char *boot = oot_places_data()[index].event[0] ? oot_places_data()[index].event : "Dm_SY_BancChangeArrive";
+    for (unsigned i = 0; i < sizeof oot_destinations / sizeof oot_destinations[0]; i++) {
+        const OotDestination *d = &oot_destinations[i];
+        if (d->child_banc && !strcmp(d->child_banc, p->banc) && !strcmp(d->child_start, p->spawn)) boot = d->child_boot;
+        else if (d->adult_banc && !strcmp(d->adult_banc, p->banc) && !strcmp(d->adult_start, p->spawn)) boot = d->adult_boot;
+    }
+    int child = 1;
+    const int known = oot_gamedata_bool(c, 0xcea220d3u, &child);
+    const int switch_age = known && child == adult;
+    if (switch_age && !oot_gamedata_set_bool(c, 0xcea220d3u, !adult)) {
+        hos_log("cheats: place %s: could not write Sequence_IsChildhood", p->label);
+        return 0;
+    }
+    hos_log("cheats: place '%s' (%s), %s%s: map %s at %s, arriving with %s", p->label, p->key, adult ? "adult" : "child",
+            switch_age ? " (age switched)" : "", p->banc, p->spawn, boot);
+    place_target.banc = p->banc, place_target.start = p->spawn, place_target.boot = boot;
+    const int sent = oot_teleport(c, actor, 0);
+    place_target.banc = NULL;
+    if (!sent && switch_age) oot_gamedata_set_bool(c, 0xcea220d3u, child);
+    return sent;
 }
 
 static void oot_teleport_followup(Ctx *c) {
@@ -1251,11 +1299,15 @@ static int oot_flight_moved_away(Ctx *c, uint64_t actor, const float held[3]) {
 /* The Teleport page's own screenshots (gpu/vk/vk_menu.cpp): once Link has stayed 3 s in a map of oot_capture_maps, with no
    map loading and no event playing, the menu is told (OOT_TP_CAPTURE_ID); it takes the picture if it has none of that map
    yet. Told again only after another map. Runs with the player's update, which stops while the game is paused. */
-static void oot_capture_tick(Ctx *c, int64_t now) {
+/* The Teleport places' screenshots (gpu/vk/vk_menu.cpp): the place of this map nearest Link (within kPlaceNear for one taken
+   on its own) is the one a retake takes (OOT_TP_MAP_ID); once Link has stayed 3 s near the same place, with no map loading and
+   no event playing, the menu is told (OOT_TP_CAPTURE_ID) and takes the picture if it has none of that place yet. */
+#define OOT_PLACE_NEAR 25.0f
+static void oot_capture_tick(Ctx *c, uint64_t actor, int64_t now) {
     void rx_option_set(int id, int value);
     static char banc[64];
     static int64_t since;
-    static int told = 1;
+    static int told = 1, place = -1, retake = -2;
     char now_banc[64];
     if (!oot_gamedata_string(c, 0x1d6189dau, now_banc, sizeof now_banc) || !now_banc[0]) return;   /* Sequence_CurrentBanc */
     int loading = 0;
@@ -1264,22 +1316,38 @@ static void oot_capture_tick(Ctx *c, int64_t now) {
                      (oot_gamedata_bool(c, 0xef2b60c2u, &loading) && loading);   /* an event, Sequence_IsLoadingBanc */
     if (strcmp(now_banc, banc)) {
         snprintf(banc, sizeof banc, "%s", now_banc);
-        since = now, told = 0;
-        rx_option_set(OOT_TP_MAP_ID, -1);   /* (no retake until settled here) */
+        since = now, told = 0, place = -1;
+        if (retake != -1) retake = -1, rx_option_set(OOT_TP_MAP_ID, -1);   /* (no retake until settled here) */
         return;
     }
     if (busy) {
         since = now;
         return;
     }
-    if (told || now - since < 3000000000LL) return;
+    float at[3];
+    for (unsigned i = 0; i < 3; i++) at[i] = oot_load_float(c, actor + 796 + i * 4);
+    int nearest = -1;
+    float best = 0;
+    for (int i = 0; i < OOT_TP_PLACES; i++) {
+        if (strcmp(oot_tp_places[i].banc, banc)) continue;
+        const OotTpPlaceData *pd = &oot_places_data()[i];
+        if (!pd->event[0]) continue;   /* (not in teleport_places.bin: no position) */
+        const float dx = at[0] - pd->pos[0], dy = at[1] - pd->pos[1], dz = at[2] - pd->pos[2];
+        const float d = dx * dx + dy * dy + dz * dz;
+        if (nearest < 0 || d < best) nearest = i, best = d;
+    }
+    if (nearest != retake && now - since >= 1000000000LL) {
+        retake = nearest;
+        rx_option_set(OOT_TP_MAP_ID, nearest);   /* (the place a retake takes: the Retake picture button) */
+        if (nearest >= 0)
+            hos_log("cheats: nearest place '%s' (%s), %.1f away; Link at %.2f %.2f %.2f", oot_tp_places[nearest].label,
+                    oot_tp_places[nearest].key, sqrtf(best), at[0], at[1], at[2]);
+    }
+    const int near_place = nearest >= 0 && best <= OOT_PLACE_NEAR * OOT_PLACE_NEAR ? nearest : -1;
+    if (near_place != place) place = near_place, since = now, told = 0;
+    if (place < 0 || told || now - since < 3000000000LL) return;
     told = 1;
-    for (int i = 0; i < OOT_CAPTURE_MAPS; i++)
-        if (!strcmp(oot_capture_maps[i], banc)) {
-            rx_option_set(OOT_TP_MAP_ID, i);   /* (the map a retake takes: the Retake picture shortcut) */
-            rx_option_set(OOT_TP_CAPTURE_ID, i);
-            break;
-        }
+    rx_option_set(OOT_TP_CAPTURE_ID, place);
 }
 
 static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components) {
@@ -1307,13 +1375,15 @@ static void oot_update_player_cheats(Ctx *c, uint64_t actor, uint64_t components
     }
     oot_teleport_followup(c);
     oot_inventory_refresh(c, now);
-    oot_capture_tick(c, now);
+    oot_capture_tick(c, actor, now);
     oot_player_speed(c, components);
     oot_map_refresh(c, now);
     if (action >= OOT_CHEAT_ITEM_ACTION && action < OOT_CHEAT_ITEM_ACTION + 256 * (int)OOT_ITEM_COUNT) {
         oot_inventory_edit(c, action);
     } else if (action == OOT_AGE_ACTION) {
         oot_toggle_age(c, actor);
+    } else if (action >= OOT_PLACE_ACTION && action < OOT_PLACE_ACTION + 2 * OOT_TP_PLACES) {
+        oot_travel_place(c, actor, (unsigned)(action - OOT_PLACE_ACTION) / 2, (action - OOT_PLACE_ACTION) & 1);
     } else if (action >= OOT_TELEPORT_ACTION) {
         const int sent = oot_teleport(c, actor, (unsigned)(action - OOT_TELEPORT_ACTION));
         if (bridge_ticket) oot_bridge_teleport_done(bridge_ticket, sent);

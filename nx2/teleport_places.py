@@ -8,7 +8,13 @@ bcett.byml dictionary): the arrival point's HorsePos anchor where it links one (
 its BackPos or FieldDungeonEntranceGo anchor, else the point itself. Nothing made from the game is in the repository; the
 file stays in the game folder, as the button prompts do. The menu uses the positions to know which place a screenshot is of.
 
-Layout (little-endian): 'TPP1', u32 count, then count x {char key[48]; float x, y, z}. Needs zstandard (the builder's own).
+Each place's arrival event is the one the game's ordinary entrances to its arrival point play (a map change by
+Dm_SY_BancChangeGo, arriving by a Dm_SY_BancChangeArrive event; another point's event left the screen black), else the plain
+Dm_SY_BancChangeArrive. A point no entrance of any map leads to (a warp's, a scene's, a boss room's, a minigame's) is marked:
+arriving there may depend on the story, and the page says so.
+
+Layout (little-endian): 'TPP2', u32 count, then count x {char key[48]; float x, y, z; char event[64]; u8 story; u8 pad[3]}.
+Needs zstandard (the builder's own).
 """
 import argparse
 import os
@@ -90,7 +96,7 @@ def byml(b):
 def places():
     """[(map, arrival point, key)] from gpu/vk/oot_tp_places.h"""
     text = open(PLACES, encoding="utf-8").read()
-    return re.findall(r'\{"(\w+)", "(\w+)", "(?:[^"\\]|\\.)*", "([^"]+)"\}', text)
+    return re.findall(r'\{"(\w+)", "(\w+)", "(?:[^"\\]|\\.)*", "([^"]+)", \d\}', text)
 
 
 def main():
@@ -100,6 +106,31 @@ def main():
     a = ap.parse_args()
     decompress = zstandard.ZstdDecompressor(dict_data=zstandard.ZstdCompressionDict(zs_dictionary(a.romfs, "bcett.byml.zsdic")))
     maps, out, missing = {}, [], []
+    # (every map's entrances: the arrival events they play at each (map, arrival point), and which points any leads to)
+    arrive, reached = {}, set()
+    for folder in sorted(os.listdir(os.path.join(a.romfs, "Banc"))):
+        d = os.path.join(a.romfs, "Banc", folder)
+        for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+            if not name.endswith(".bcett.byml.zs"):
+                continue
+            try:
+                with open(os.path.join(d, name), "rb") as f:
+                    doc = byml(decompress.decompressobj().decompress(f.read()))
+            except (OSError, ValueError, zstandard.ZstdError, struct.error, IndexError):
+                continue
+            for t in (doc or {}).get("Actors", []) if isinstance(doc, dict) else []:
+                dyn = t.get("Dynamic") or {}
+                start = dyn.get("NextStartPosName")
+                if not start:
+                    continue
+                for k in ("NextBancParamNameChild", "NextBancParamNameAdult", "NextBancParamName"):
+                    if not dyn.get(k):
+                        continue
+                    reached.add((dyn[k], start))
+                    ev = dyn.get("NextEventName") or ""
+                    if dyn.get("FirstEventName") == "Dm_SY_BancChangeGo" and ev.startswith("Dm_SY_BancChangeArrive"):
+                        arrive.setdefault((dyn[k], start), {}).setdefault(ev, 0)
+                        arrive[(dyn[k], start)][ev] += 1
     for banc, spawn, key in places():
         if banc not in maps:
             base = re.sub(r"_(Child|Adult)$", "", banc)
@@ -121,15 +152,19 @@ def main():
             if t and t.get("Gyaml") == "DestinationAnchor":
                 linked.setdefault(t.get("Name"), t)
         at = next((linked[n]["Translate"] for n in LINKED if n in linked), point.get("Translate"))
-        out.append((key, at))
+        events = arrive.get((banc, spawn), {})
+        # (the one most entrances play; on a tie the map's own variant, Dm_SY_BancChangeArrive_<map>_NN, over the plain one)
+        event = max(sorted(events), key=lambda e: (events[e], len(e))) if events else "Dm_SY_BancChangeArrive"
+        out.append((key, at, event, (banc, spawn) not in reached))
     dst = os.path.join(a.out, "teleport_places.bin")
     with open(dst + ".tmp", "wb") as f:
-        f.write(b"TPP1" + struct.pack("<I", len(out)))
-        for key, (x, y, z) in out:
-            f.write(key.encode().ljust(48, b"\0")[:48] + struct.pack("<fff", x, y, z))
+        f.write(b"TPP2" + struct.pack("<I", len(out)))
+        for key, (x, y, z), event, story in out:
+            f.write(key.encode().ljust(48, b"\0")[:48] + struct.pack("<fff", x, y, z) + event.encode().ljust(64, b"\0")[:64] +
+                    struct.pack("<B3x", story))
     os.replace(dst + ".tmp", dst)
-    print("teleport places: %d positions -> %s%s" % (len(out), dst, "; not found: " + ", ".join(missing) if missing else ""),
-          flush=True)
+    print("teleport places: %d (%d reached only by warps or scenes) -> %s%s" % (len(out), sum(o[3] for o in out), dst,
+          "; not found: " + ", ".join(missing) if missing else ""), flush=True)
     return 0
 
 

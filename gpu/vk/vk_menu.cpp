@@ -37,6 +37,7 @@
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
 #include "oot_cheat_items.h"
 #include "oot_teleport_pictures.h"
+#include "oot_tp_places_data.h"
 #include "oot_teleport_capture.h"   // (the Teleport page's own screenshots: the maps, as the game side numbers them)   // (the Teleport page's pictures: each destination's maps)
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
 #include "vk_ui.h"
@@ -1114,7 +1115,56 @@ int teleport_choice = 0;
 int teleport_columns = 1, teleport_page_rows = 1;   // (as last drawn: the cards in a row, the rows that fit: Page Up / Down)
 float teleport_scroll_px = 0, teleport_want_px = 0;   // (the cards' scroll, eased toward teleport_want_px)
 bool teleport_follow = true;   // (the scroll follows the choice; the wheel lets go of it until the choice moves)
-int teleport_wheel = 0;        // (the wheel's notches since the last drawing: it scrolls by them)
+int teleport_wheel = 0;
+// (the Teleport places: the age shown (0 Kid, 1 Adult), the column with the focus (0 the areas, with the age switch above them;
+// 1 the area's places), the chosen area (of that age's, in oot_tp_areas' order) and place; the Travel question)
+int tp_age = 0, tp_focus = 0, tp_area[2] = {0, 0}, tp_place = 0;
+bool tp_on_age = false, tp_asking = false;
+int tp_ask_sel = 0;   // (the question's button: 0 Travel, 1 Cancel)
+int tp_pad_x = 2;     // (the pad button the game's X is bound to, its position: Kid / Adult on the Teleport page)
+float tp_scroll[2] = {0, 0};   // (the two columns' scroll, eased)
+/// The areas of an age, as indices into oot_tp_areas
+const std::vector<int>& tp_areas_of(int age) {
+    static std::vector<int> of[2];
+    if (of[age].empty())
+        for (int i = 0; i < OOT_TP_AREAS; ++i)
+            if (oot_tp_areas[i].adult == age) of[age].push_back(i);
+    return of[age];
+}
+int teleport_map_now_value();
+const OotTpArea& tp_area_now() { return oot_tp_areas[tp_areas_of(tp_age)[tp_area[tp_age]]]; }
+/// Kid or Adult: the same area and place in that age's list when it has them (by name), else that age's own choice
+void tp_set_age(int age) {
+    if (age == tp_age) return;
+    const OotTpArea& was = tp_area_now();
+    const char* label = oot_tp_places[was.first + std::clamp(tp_place, 0, was.count - 1)].label;
+    const auto& areas = tp_areas_of(age);
+    tp_age = age;
+    for (int k = 0; k < (int)areas.size(); ++k) {
+        const OotTpArea& a = oot_tp_areas[areas[k]];
+        if (strcmp(a.title, was.title)) continue;
+        tp_area[age] = k, tp_place = 0;
+        for (int i = 0; i < a.count; ++i)
+            if (!strcmp(oot_tp_places[a.first + i].label, label)) tp_place = i;
+        return;
+    }
+    tp_place = 0;
+}
+int tp_place_now() { return tp_area_now().first + std::clamp(tp_place, 0, tp_area_now().count - 1); }
+/// The page opens on Link's age and the area and place he is at (the game side's nearest place), or as it was left
+void tp_open() {
+    const int age = link_age.load(std::memory_order_relaxed);
+    if (age >= 0) tp_age = age;
+    const int here = teleport_map_now_value();
+    if (here >= 0) {
+        const auto& areas = tp_areas_of(tp_age);
+        for (int k = 0; k < (int)areas.size(); ++k) {
+            const OotTpArea& a = oot_tp_areas[areas[k]];
+            if (here >= a.first && here < a.first + a.count) tp_area[tp_age] = k, tp_place = here - a.first, tp_focus = 1;
+        }
+    }
+    tp_on_age = false, tp_asking = false;
+}        // (the wheel's notches since the last drawing: it scrolls by them)
 int teleport_section_of(int i) {
     int section = 0;
     while (section + 1 < kTeleportSections && i >= teleport_sections[section + 1].first) ++section;
@@ -3183,7 +3233,8 @@ std::map<std::string, TeleportPicture> teleport_captures;   // (by map; std::map
 std::mutex teleport_captures_mu;   // (the captures come from the replay's thread)
 std::once_flag teleport_pictures_once;   // (read once, by whichever thread asks first)
 std::atomic<int> teleport_capture_want{-1};
-std::atomic<int> teleport_map_now{-1};   // (the map Link is settled in, as the game side says: what a retake takes)
+std::atomic<int> teleport_map_now{-1};   // (the Teleport place nearest Link, as the game side says: what a retake takes)
+int teleport_map_now_value() { return teleport_map_now.load(std::memory_order_relaxed); }
 std::atomic<int64_t> notice_until{0};   // (a line over the game while the menu is closed: a screenshot taken)
 char notice_text[96];
 ImTextureData* teleport_tex = nullptr;
@@ -3230,20 +3281,32 @@ void read_teleport_pictures_now() {
     logf("menu: Teleport pictures: %d screenshots", (int)teleport_captures.size());
 }
 void read_teleport_pictures() { std::call_once(teleport_pictures_once, read_teleport_pictures_now); }
-/// The picture destination i shows: the screenshot of its map for Link's age now (Travel keeps his age), else of the other
-/// age's map, else none (the page says one comes)
+/// The picture place i shows: its screenshot; for the old Teleport's arrival place (legacy), its map's picture taken before
+/// pictures were per place; else none (the page says one comes)
 const TeleportPicture* teleport_choose(int i) {
-    constexpr int kMaps = sizeof teleport_maps / sizeof teleport_maps[0];
-    if (i < 0 || i >= kMaps) return nullptr;
-    const int first = link_age.load(std::memory_order_relaxed) == 1;
-    for (int k = 0; k < 2; ++k)
-        if (const char* map = teleport_maps[i][first ^ k]) {
-            const auto it = teleport_captures.find(map);
-            if (it != teleport_captures.end()) return &it->second;
-        }
-    return nullptr;
+    if (i < 0 || i >= OOT_TP_PLACES) return nullptr;
+    const OotTpPlace& place = oot_tp_places[i];
+    auto it = teleport_captures.find(place.key);
+    if (it == teleport_captures.end() && place.legacy) it = teleport_captures.find(place.banc);
+    return it != teleport_captures.end() ? &it->second : nullptr;
 }
-/// The picture of the map destination i arrives in, in the page's one texture, or null
+/// The places' data from the player's dump (teleport_places.bin): the story tag. Read once
+const OotTpPlaceData* teleport_places_data() {
+    static OotTpPlaceData data[OOT_TP_PLACES];
+    static std::once_flag once;
+    std::call_once(once, [] {
+        const int found = oot_tp_places_read(game_folder_file("teleport_places.bin").c_str(), data);
+        logf("menu: Teleport places: %d of %d from teleport_places.bin", found, OOT_TP_PLACES);
+    });
+    return data;
+}
+/// Whether place i has a screenshot (the gold dot in its card)
+bool teleport_has_capture(int i) {
+    read_teleport_pictures();
+    std::lock_guard lk(teleport_captures_mu);
+    return teleport_captures.count(oot_tp_places[i].key) || (oot_tp_places[i].legacy && teleport_captures.count(oot_tp_places[i].banc));
+}
+/// The picture of place i, in the page's one texture, or null
 ImTextureData* teleport_picture(int i) {
     read_teleport_pictures();
     std::lock_guard lk(teleport_captures_mu);
@@ -3312,25 +3375,30 @@ void balanced_centre(ui::Ctx& c, ImFont* f, float px, float cx, float y, float r
     ui::text_mid_centre(c, f, px, cx, y + px * 1.3f, col, t.substr(best + skip).c_str());
 }
 
+/// The Teleport page: on the left, Kid | Adult above that age's areas under their regions, then the chosen area's places;
+/// on the right, the place's picture and help. Travel asks first, in a box over the page.
 void draw_teleport(ui::Ctx& c) {
     const float s = c.s;
-    char count[32];
-    snprintf(count, sizeof count, "%d of %d", teleport_choice + 1, kTeleports);
+    const auto& areas = tp_areas_of(tp_age);
+    tp_area[tp_age] = std::clamp(tp_area[tp_age], 0, (int)areas.size() - 1);
+    const OotTpArea& area = tp_area_now();
+    tp_place = std::clamp(tp_place, 0, area.count - 1);
+    const int place = area.first + tp_place;
+    char count[96];
+    snprintf(count, sizeof count, "%s · %d of %d", area.title, tp_place + 1, area.count);
     const float hh = title_banner(c, "Teleport", count);
     float cx0, cx1, hx0, hx1;
     bool narrow;
     columns(c, &cx0, &cx1, &hx0, &hx1, &narrow);
     column(c, cx0, cx1, hh);
-    const ui::Prompt prompts[] = {{ui::kUpDown, "Move"}, {ui::kLeftRight, "Move"}, {ui::kTabs, "Section"},
-        {ui::kConfirm, "Travel"}, {ui::kBack, "Back"}};
-    const float bar = ui::prompt_bar_top(c);   // (the strip itself drawn last, over all: below)
-    const float left = cx0 + 24 * s, right = cx1 - 24 * s, top = hh + 16 * s;
-    const float strip = 58 * s, detail = bar - 14 * s - strip;
-    const float bottom = std::max(top, detail - 6 * s), gap = 10 * s, pitch = 48 * s, head = 40 * s;
-    const char* const note = teleport_notes[teleport_choice];
+    const float bar = ui::prompt_bar_top(c);
+    const float left = cx0 + 24 * s, right = cx1 - 24 * s, top = hh + 16 * s, bottom = bar - 12 * s;
+    const float gap = 18 * s, split = left + (right - left) * 0.47f;
+    const float ax0 = left, ax1 = split - gap * 0.5f, px0 = split + gap * 0.5f, px1 = right;
+
+    // (the place's picture, or the frame a screenshot fills; its help under it)
     float help_top = std::max(hh + 26 * s, c.h * .30f);
-    if (ImTextureData* pic = narrow ? nullptr : teleport_picture(teleport_choice)) {
-        // (the destination's picture in a box of its own above the help, a thin gold edge round it)
+    if (ImTextureData* pic = narrow ? nullptr : teleport_picture(place)) {
         const float pad = 12 * s, iw = hx1 - hx0 - 2 * pad, ih = iw * pic->Height / (float)pic->Width;
         const ImVec2 a(hx0, hh + 26 * s), b(hx1, hh + 26 * s + ih + 2 * pad);
         ui::box(c, a, b);
@@ -3339,16 +3407,15 @@ void draw_teleport(ui::Ctx& c) {
         c.d->AddRect(ia, ib, ui::alpha(ui::kAccent, 0.8f), 3 * s, 0, std::max(1.0f, 1.5f * s));
         help_top = b.y + 14 * s;
     } else if (!narrow) {
-        // (no screenshot of this place yet: the frame, and what fills it)
         const float pad = 12 * s, ih = (hx1 - hx0 - 2 * pad) * 9 / 16;
         const ImVec2 a(hx0, hh + 26 * s), b(hx1, hh + 26 * s + ih + 2 * pad);
         ui::box(c, a, b);
         const ImVec2 ia(a.x + pad, a.y + pad), ib(b.x - pad, b.y - pad);
-        c.d->AddRectFilled(ia, ib, ui::kCellDark, 3 * s);   // (a place kept for the picture, not a hole onto the game)
+        c.d->AddRectFilled(ia, ib, ui::kCellDark, 3 * s);
         c.d->AddRect(ia, ib, ui::alpha(ui::kEdge, 0.8f), 3 * s, 0, std::max(1.0f, 1.5f * s));
         const float cx = (ia.x + ib.x) * 0.5f, cy = (ia.y + ib.y) * 0.5f;
         ui::text_mid_centre(c, c.f.heading, 20 * s, cx, cy - 30 * s, ui::kInk, "No picture yet");
-        const float rule = 34 * s;   // (the sections' gold rule, a diamond in its middle)
+        const float rule = 34 * s;
         c.d->AddLine(ImVec2(cx - rule - 9 * s, cy), ImVec2(cx - 9 * s, cy), ui::alpha(ui::kAccent, 0.8f), std::max(1.0f, s));
         c.d->AddLine(ImVec2(cx + 9 * s, cy), ImVec2(cx + rule + 9 * s, cy), ui::alpha(ui::kAccent, 0.8f), std::max(1.0f, s));
         ui::diamond(c, ImVec2(cx, cy), 4 * s, ui::kGoldHi);
@@ -3356,100 +3423,147 @@ void draw_teleport(ui::Ctx& c) {
                         "Taken the first time Link stays at this location for a few seconds.");
         help_top = b.y + 14 * s;
     }
+    char where[128];
+    snprintf(where, sizeof where, "%s · %s", area.title, i18n::tr(tp_age ? "Adult Link" : "Kid Link"));
     if (!narrow)
-        help_box(c, hx0, hx1, help_top, teleport_names[teleport_choice],
-                 "Select a destination, then Travel (or Enter) to go to its map entrance. Link keeps his current age.", note, nullptr, 0,
-                 false, hh + 18 * s, bar - 12 * s);
-    // (as many columns as fit the longest name and its tag, at most 4; each section under its heading, the cards scrolled to
-    // keep the selected one in view)
-    static float card_w = 0, card_s = 0;
-    if (card_s != s) {
-        card_s = s, card_w = 0;
-        for (int i = 0; i < kTeleports; ++i)
-            card_w = std::max(card_w, ui::size_of(c.f.body, 17 * s, teleport_names[i]).x +
-                                          (teleport_notes[i] ? card_tag(c, 0, 0, teleport_notes[i], false) + 12 * s : 0));
-    }
-    teleport_columns = std::clamp((int)((right - left + gap) / (card_w + 36 * s + gap)), 1, 4);
-    const int cols = teleport_columns;
-    const float width = (right - left + gap) / cols;
-    // (the y of each section's heading and first row, from the top of the list)
-    float section_y[kTeleportSections + 1];
-    float total = 0;
-    for (int k = 0; k < kTeleportSections; ++k) {
-        section_y[k] = total;
-        const int n = teleport_section_end(k) - teleport_sections[k].first;
-        total += head + (n + cols - 1) / cols * pitch + (k + 1 < kTeleportSections ? 10 * s : 0);
-    }
-    section_y[kTeleportSections] = total;
-    auto card_y = [&](int i) {
-        const int k = teleport_section_of(i);
-        return section_y[k] + head + (i - teleport_sections[k].first) / cols * pitch;
+        help_box(c, hx0, hx1, help_top, oot_tp_places[place].label,
+                 "Choose Kid or Adult at the top of the list, then an area and a place. Travel asks before going.",
+                 teleport_places_data()[place].story ? "Reached in the game by a warp or a scene: arriving here may depend on how far the story is."
+                                            : nullptr, where,
+                 0, false, hh + 18 * s, bar - 12 * s);
+
+    // (a column of cards under a heading, scrolled to keep the chosen one in view; y0: the first card's top)
+    const float pitch = 44 * s, card_h = 36 * s, head_h = 36 * s;
+    auto scroll_to = [&](int col, float total, float view, float y0, float y1) {
+        float& at = tp_scroll[col];
+        float want = at;
+        if (total <= view) want = 0;
+        else {
+            if (y0 < want) want = y0;
+            if (y1 > want + view) want = y1 - view;
+            want = std::clamp(want, 0.0f, total - view);
+        }
+        at += (want - at) * ease_step;
+        if (std::fabs(want - at) < 0.5f) at = want;
+        return at;
     };
-    const float view = bottom - top;
-    teleport_page_rows = std::max(1, (int)(view / pitch) - 1);
-    float& at = teleport_scroll_px;
-    float& want = teleport_want_px;
-    if (teleport_wheel) want -= teleport_wheel * pitch, teleport_wheel = 0;   // (the wheel: the cards move, the choice stays)
-    if (total <= view) want = 0;
-    else if (!teleport_follow) want = std::clamp(want, 0.0f, total - view);
-    else {
-        const int k = teleport_section_of(teleport_choice);
-        const bool first_row = teleport_choice - teleport_sections[k].first < cols;
-        const float y0 = first_row ? section_y[k] : card_y(teleport_choice) - pitch * 0.5f, y1 = card_y(teleport_choice) + pitch * 1.5f;
-        if (y0 < want) want = y0;
-        if (y1 > want + view) want = y1 - view;
-        want = std::clamp(want, 0.0f, total - view);
-    }
-    at += (want - at) * ease_step;
-    if (std::fabs(want - at) < 0.5f) at = want;
-    if (total > view) scroll_bar(c, cx0 + 12 * s, top, bottom, (int)total, (int)view, at);
-    c.d->PushClipRect(ImVec2(left - 12 * s, top), ImVec2(right + 12 * s, bottom), true);
-    for (int k = 0; k < kTeleportSections; ++k) {
-        const float hy = top + section_y[k] - at + head * 0.5f;
-        if (hy > bottom + head || hy < top - head) continue;
-        ui::text_mid(c, c.f.heading, 20 * s, left, hy, ui::kInkBright, teleport_sections[k].name);
-        const float tw = ui::size_of(c.f.heading, 20 * s, teleport_sections[k].name).x;
-        char n_text[16];
-        snprintf(n_text, sizeof n_text, "%d", teleport_section_end(k) - teleport_sections[k].first);
-        const float nw = ui::size_of(c.f.body, 15 * s, n_text).x;
-        ui::text_mid(c, c.f.body, 15 * s, right - nw, hy, ui::kSoft, n_text);
-        c.d->AddLine(ImVec2(left + tw + 14 * s, hy + s), ImVec2(right - nw - 12 * s, hy + s), ui::alpha(ui::kAccent, 0.45f),
-                     std::max(1.0f, s));
-    }
-    for (int i = 0; i < kTeleports; ++i) {
-        const int k = teleport_section_of(i), cell = i - teleport_sections[k].first;
-        const ImVec2 a(left + cell % cols * width, top + card_y(i) - at);
-        const ImVec2 b(a.x + width - gap, a.y + pitch - 8 * s);
-        if (b.y < top || a.y > bottom) continue;
-        const bool selected = i == teleport_choice;
-        c.d->AddRectFilled(a, b, selected ? ui::kCellNameSel : ui::kCellName, 3 * s);
-        c.d->AddRect(a, b, ui::kEdge, 3 * s, std::max(1.0f, s));
-        if (selected) c.d->AddRectFilled(a, ImVec2(a.x + 4 * s, b.y), ui::kGoldHi);
-        float name_end = b.x - 10 * s;
-        if (teleport_notes[i]) name_end -= card_tag(c, b.x - 8 * s, (a.y + b.y) * 0.5f, teleport_notes[i]) + 8 * s;
-        c.d->PushClipRect(a, ImVec2(name_end, b.y), true);
-        ui::text_mid(c, selected ? c.f.strong : c.f.body, 17 * s, a.x + 16 * s, (a.y + b.y) * 0.5f, selected ? ui::kInkBright : ui::kInk,
-                     teleport_names[i]);
+    auto card = [&](ImVec2 a, ImVec2 b, const char* text, bool chosen, bool focus, const char* right_text, int dot, int hit,
+                    const char* tag = nullptr) {
+        // (chosen in the column with the focus: lit, the gold bar; chosen elsewhere: a gold edge, so the column shows its choice)
+        const bool lit = chosen && focus;
+        c.d->AddRectFilled(a, b, lit ? ui::kCellNameSel : ui::kCellName, 3 * s);
+        c.d->AddRect(a, b, chosen && !focus ? ui::alpha(ui::kAccent, 0.9f) : ui::kEdge, 3 * s, 0, std::max(1.0f, s));
+        if (lit) c.d->AddRectFilled(a, ImVec2(a.x + 4 * s, b.y), ui::kGoldHi);
+        float end = b.x - 12 * s;
+        const float my = (a.y + b.y) * 0.5f;
+        if (right_text) {
+            const float w = ui::size_of(c.f.body, 14 * s, right_text).x;
+            ui::text_mid(c, c.f.body, 14 * s, end - w, my, ui::kSoft, right_text);
+            end -= w + 10 * s;
+        }
+        if (dot >= 0) {   // (a picture of the place: a gold dot; none yet: a ring)
+            const ImVec2 d(end - 4 * s, my);
+            if (dot) c.d->AddCircleFilled(d, 3.5f * s, ui::kGoldHi);
+            else c.d->AddCircle(d, 3.5f * s, ui::kDim, 0, std::max(1.0f, s));
+            end -= 16 * s;
+        }
+        if (tag) end -= card_tag(c, end, my, tag) + 8 * s;   // (story: a place the game reaches by a warp or a scene)
+        c.d->PushClipRect(a, ImVec2(end, b.y), true);
+        ui::text_mid(c, lit ? c.f.strong : c.f.body, 16 * s, a.x + 14 * s, my, lit ? ui::kInkBright : ui::kInk, text);
         c.d->PopClipRect();
-        if (selected) ui::glow(c, a, b);
-        hits.add(a.x, std::max(a.y, top), b.x, std::min(b.y, bottom), menu_hit::kListLine, i);
+        if (lit) ui::glow(c, a, b);
+        hits.add(a.x, a.y, b.x, b.y, menu_hit::kListLine, hit);
+    };
+
+    // (Kid | Adult, above the areas)
+    const ImVec2 sa(ax0, top), sb(ax1, top + 40 * s);
+    halves_cell(c, sa, sb, "Kid", "Adult", tp_age == 1, tp_focus == 0 && tp_on_age, false);
+    const float mid = (sa.x + sb.x) * 0.5f;
+    hits.add(sa.x, sa.y, mid, sb.y, menu_hit::kListLine, 3000);
+    hits.add(mid, sa.y, sb.x, sb.y, menu_hit::kListLine, 3001);
+
+    // (the areas, under their regions)
+    const float list_top = top + 40 * s + 16 * s, view = bottom - list_top;
+    std::vector<float> area_y(areas.size());
+    float total = 0;
+    for (int k = 0; k < (int)areas.size(); ++k) {
+        if (k == 0 || oot_tp_areas[areas[k]].region != oot_tp_areas[areas[k - 1]].region) total += (k ? 8 * s : 0) + head_h;
+        area_y[k] = total, total += pitch;
+    }
+    const int ka = tp_area[tp_age];
+    float at = scroll_to(0, total, view, area_y[ka] - (ka == 0 || oot_tp_areas[areas[ka]].region != oot_tp_areas[areas[ka - 1]].region ? head_h : 0),
+                         area_y[ka] + pitch);
+    if (total > view) scroll_bar(c, cx0 + 12 * s, list_top, bottom, (int)total, (int)view, at);
+    c.d->PushClipRect(ImVec2(ax0 - 4 * s, list_top), ImVec2(ax1 + 4 * s, bottom), true);
+    for (int k = 0; k < (int)areas.size(); ++k) {
+        const OotTpArea& a = oot_tp_areas[areas[k]];
+        const float y = list_top + area_y[k] - at;
+        if (k == 0 || a.region != oot_tp_areas[areas[k - 1]].region) {   // (the region's heading, a gold rule after it)
+            const float hy = y - head_h * 0.5f;
+            const char* name = oot_tp_regions[a.region];
+            ui::text_mid(c, c.f.heading, 17 * s, ax0, hy, ui::kInkBright, name);
+            const float tw = ui::size_of(c.f.heading, 17 * s, name).x;
+            if (ax0 + tw + 12 * s < ax1)
+                c.d->AddLine(ImVec2(ax0 + tw + 12 * s, hy + s), ImVec2(ax1, hy + s), ui::alpha(ui::kAccent, 0.45f), std::max(1.0f, s));
+        }
+        if (y + card_h < list_top || y > bottom) continue;
+        char n[8];
+        snprintf(n, sizeof n, "%d", a.count);
+        card(ImVec2(ax0, y), ImVec2(ax1, y + card_h), a.title, k == ka, tp_focus == 0 && !tp_on_age, n, -1, 1000 + k);
     }
     c.d->PopClipRect();
-    if (detail >= top) {   // (the selection, its section and note, and Travel: what Enter does)
-        c.d->AddLine(ImVec2(left, detail), ImVec2(right, detail), ui::alpha(ui::kEdge, 0.8f));
-        const float my = detail + strip * 0.5f + 2 * s;
-        const float bw = ui::size_of(c.f.strong, 20 * s, "Travel").x + 56 * s;
-        const ImVec2 a(right - bw, my - 18 * s), b(right, my + 18 * s);
-        c.d->PushClipRect(ImVec2(left, detail), ImVec2(a.x - 12 * s, detail + strip), true);
-        ui::text_mid(c, c.f.strong, 18 * s, left, my - 10 * s, ui::kInkBright, teleport_names[teleport_choice]);
-        char where[64];
-        snprintf(where, sizeof where, note ? "%s · %s" : "%s", teleport_sections[teleport_section_of(teleport_choice)].name, note);
-        ui::text_mid(c, c.f.body, 15 * s, left, my + 12 * s, ui::kAccent, where);
-        c.d->PopClipRect();
-        ui::button(c, a, b, "Travel", false);
-        hits.add(a.x, a.y, b.x, b.y, menu_hit::kButton, 0);
+
+    // (the area's places, under its name)
+    {
+        const float hy = top + 20 * s;
+        ui::text_mid(c, c.f.heading, 17 * s, px0, hy, ui::kInkBright, area.title);
+        const float tw = ui::size_of(c.f.heading, 17 * s, area.title).x;
+        if (px0 + tw + 12 * s < px1)
+            c.d->AddLine(ImVec2(px0 + tw + 12 * s, hy + s), ImVec2(px1, hy + s), ui::alpha(ui::kAccent, 0.45f), std::max(1.0f, s));
     }
-    ui::prompt_bar(c, prompts, 5);   // (the prompts, on top of the help and the cards)
+    const float ptotal = area.count * pitch;
+    const float pat = scroll_to(1, ptotal, view, tp_place * pitch, tp_place * pitch + pitch);
+    c.d->PushClipRect(ImVec2(px0 - 4 * s, list_top), ImVec2(px1 + 4 * s, bottom), true);
+    for (int k = 0; k < area.count; ++k) {
+        const float y = list_top + k * pitch - pat;
+        if (y + card_h < list_top || y > bottom) continue;
+        const int dot = teleport_has_capture(area.first + k) ? 1 : 0;
+        card(ImVec2(px0, y), ImVec2(px1, y + card_h), oot_tp_places[area.first + k].label, k == tp_place, tp_focus == 1, nullptr, dot,
+             2000 + k, teleport_places_data()[area.first + k].story ? "story" : nullptr);
+    }
+    c.d->PopClipRect();
+
+    if (!tp_asking) {
+        const ui::Prompt prompts[] = {{ui::kUpDown, "Move"}, {ui::kLeftRight, tp_focus ? "Areas" : "Places"}, {ui::kTabs, "Region"},
+            {ui::kFace, tp_age ? "Kid" : "Adult", "X", menu_keys::dot(tp_pad_x)}, {ui::kConfirm, tp_focus ? "Travel" : "Open"},
+            {ui::kBack, "Back"}};
+        ui::prompt_bar(c, prompts, 6);
+        return;
+    }
+    // (the Travel question, over the page: the place, its area and Link's age; Travel or Cancel)
+    c.d->AddRectFilled(ImVec2(0, 0), ImVec2(c.w, c.h), ui::rgba(10, 8, 6, 150));
+    const float W = 560 * s, H = 224 * s;
+    const ImVec2 p((c.w - W) * 0.5f, (c.h - H) * 0.5f), q = p + ImVec2(W, H);
+    ui::shadow(c, p, q, 30 * s, 1.0f, 8 * s);
+    c.d->AddRectFilled(p, q, ui::rgba(36, 28, 19, 250));
+    c.d->AddRect(p, q, ui::rgba(122, 98, 64, 230), 0, 2 * s);
+    const float hb = 50 * s;
+    c.d->AddRectFilledMultiColor(p, ImVec2(q.x, p.y + hb), ui::kBannerTop, ui::kBannerTop, ui::kBanner, ui::kBanner);
+    c.d->AddRectFilled(ImVec2(p.x, p.y + hb - 3 * s), ImVec2(q.x, p.y + hb), ui::kBannerEdge);
+    ui::text_mid_centre(c, c.f.heading, 23 * s, (p.x + q.x) * 0.5f, p.y + hb * 0.5f, ui::kBannerInk, "Travel");
+    char ask[160];
+    snprintf(ask, sizeof ask, "Go to %s?", oot_tp_places[place].label);
+    ui::text_mid_centre(c, c.f.strong, 20 * s, (p.x + q.x) * 0.5f, p.y + 84 * s, ui::kInkBright, ask);
+    ui::text_mid_centre(c, c.f.body, 16 * s, (p.x + q.x) * 0.5f, p.y + 116 * s, ui::kAccent, where);
+    const float bw = 200 * s, bh = 46 * s, bgap = 24 * s, by = p.y + 154 * s, bx = (p.x + q.x) * 0.5f - bw - bgap * 0.5f;
+    const char* labels[2] = {"Travel", "Cancel"};
+    for (int i = 0; i < 2; i++) {
+        const ImVec2 a(bx + i * (bw + bgap), by), b = a + ImVec2(bw, bh);
+        ui::button(c, a, b, labels[i], i == tp_ask_sel);
+        hits.add(a.x, a.y, b.x, b.y, menu_hit::kButton, 10 + i);
+    }
+    const ui::Prompt prompts[] = {{ui::kLeftRight, "Choose"}, {ui::kConfirm, "Confirm"}, {ui::kBack, "Cancel"}};
+    ui::prompt_bar(c, prompts, 3);
 }
 
 void draw_ask(ui::Ctx& c) {
@@ -4060,11 +4174,11 @@ int menu_take_capture_request() {
     const int want = teleport_capture_want.exchange(-1, std::memory_order_relaxed);
     return open_now.load(std::memory_order_relaxed) ? -1 : want;
 }
-void menu_store_capture(int map, const uint8_t* rgba, uint32_t w, uint32_t h) {
-    if (map < 0 || map >= OOT_CAPTURE_MAPS) return;
+void menu_store_capture(int map, const uint8_t* rgba, uint32_t w, uint32_t h) {   // (map: a Teleport place)
+    if (map < 0 || map >= OOT_TP_PLACES) return;
     read_teleport_pictures();   // (the file's others first: it is written whole)
     std::lock_guard lk(teleport_captures_mu);
-    TeleportPicture& p = teleport_captures[oot_capture_maps[map]];
+    TeleportPicture& p = teleport_captures[oot_tp_places[map].key];
     p.w = w, p.h = h;
     p.rgba.assign(rgba, rgba + (size_t)w * h * 4);
     for (size_t i = 3; i < p.rgba.size(); i += 4) p.rgba[i] = 255;   // (opaque, whatever the picture's alpha held)
@@ -4084,8 +4198,9 @@ void menu_store_capture(int map, const uint8_t* rgba, uint32_t w, uint32_t h) {
         std::error_code ec;
         if (ok) std::filesystem::rename(path + ".tmp", path, ec);   // (over the old one, on either platform)
     }
-    logf("menu: Teleport screenshot of %s taken (%d in all)", oot_capture_maps[map], (int)teleport_captures.size());
-    snprintf(notice_text, sizeof notice_text, "Teleport picture saved");
+    logf("menu: Teleport screenshot of %s (%s) taken (%d in all)", oot_tp_places[map].label, oot_tp_places[map].key,
+         (int)teleport_captures.size());
+    snprintf(notice_text, sizeof notice_text, "Picture saved: %s", oot_tp_places[map].label);
     notice_until.store(prof_now() + 2500000000LL, std::memory_order_relaxed);
 }
 bool menu_is_open() { return open_now.load(std::memory_order_relaxed); }
@@ -4179,11 +4294,13 @@ void menu_option_set(int id, int value) {
         teleport_map_now.store(value, std::memory_order_relaxed);
         return;
     }
-    if (id == OOT_TP_CAPTURE_ID) {   // (Link has stayed in a map: its screenshot, when there is none yet and the menu is closed)
-        if (value < 0 || value >= OOT_CAPTURE_MAPS || open_now.load(std::memory_order_relaxed)) return;
+    if (id == OOT_TP_CAPTURE_ID) {   // (Link has stayed near a place: its screenshot, when it has none yet and the menu is closed)
+        if (value < 0 || value >= OOT_TP_PLACES || open_now.load(std::memory_order_relaxed)) return;
         read_teleport_pictures();
         std::lock_guard lk(teleport_captures_mu);
-        if (!teleport_captures.count(oot_capture_maps[value])) teleport_capture_want.store(value, std::memory_order_relaxed);
+        const OotTpPlace& place = oot_tp_places[value];   // (a picture of its own, or its map's old one where that is of it)
+        if (!teleport_captures.count(place.key) && !(place.legacy && teleport_captures.count(place.banc)))
+            teleport_capture_want.store(value, std::memory_order_relaxed);
         return;
     }
     if (id == OOT_CHEAT_AGE_ID) {   // (Link's age: the Switch age row shows it)
@@ -4327,17 +4444,29 @@ void inventory_mouse(const MkwVkPointer& ptr, int mx, int my, bool* press, bool&
         changed |= inventory_page != was;
     }
 }
-/// (hookshot) the mouse on the teleport list: a click on a card selects it (Travel, or confirm, goes), the Travel button
-/// goes; the wheel scrolls the cards and leaves the choice where it is; a right click goes back
+/// (hookshot) the mouse on the Teleport page: a click on Kid or Adult, an area or a place chooses it (a place already chosen:
+/// the Travel question); on the question, its buttons; the wheel moves the choice in the column under the focus; a right
+/// click goes back
 void teleport_mouse(const MkwVkPointer& ptr, int mx, int my, bool* press, bool& changed) {
     const menu_hit::Hit hit = hits.at((float)mx, (float)my);
     if (ptr.pressed & HOS_MOUSE_LEFT) {
-        if (hit.part == menu_hit::kListLine && hit.index >= 0 && hit.index < kTeleports)
-            teleport_choice = hit.index, teleport_follow = true, changed = true;
-        else if (hit.part == menu_hit::kButton) press[7] = true;
+        if (tp_asking) {
+            if (hit.part == menu_hit::kButton && hit.index >= 10 && hit.index <= 11) tp_ask_sel = hit.index - 10, press[7] = true;
+        } else if (hit.part == menu_hit::kListLine && hit.index >= 3000) {
+            tp_set_age(hit.index - 3000), tp_on_age = true, tp_focus = 0, changed = true;
+        } else if (hit.part == menu_hit::kListLine && hit.index >= 2000) {
+            const int k = hit.index - 2000;
+            if (tp_focus == 1 && tp_place == k) press[7] = true;
+            else tp_place = k, tp_focus = 1, tp_on_age = false, changed = true;
+        } else if (hit.part == menu_hit::kListLine && hit.index >= 1000) {
+            if (tp_area[tp_age] != hit.index - 1000) tp_place = 0;
+            tp_area[tp_age] = hit.index - 1000, tp_focus = 0, tp_on_age = false, changed = true;
+        } else if (hit.part == menu_hit::kButton) {
+            press[7] = true, tp_focus = 1;
+        }
     }
     if (ptr.pressed & HOS_MOUSE_RIGHT) press[5] = true;
-    if (ptr.wheel) teleport_wheel += ptr.wheel, teleport_follow = false, changed = true;
+    if (ptr.wheel) press[ptr.wheel > 0 ? 1 : 2] = true;
 }
 /// A debug tool's row on the Debug tab (Row::cheat i): Left and Right, and confirm (press[7]: A, Enter, a click). Teleport and
 /// Inventory open their pages; back from them comes to the Debug tab, the row still selected
@@ -4373,7 +4502,7 @@ void cheat_press(int i, const bool* press, bool& changed) {
         free_camera.store(press[7] ? !free_camera.load() : press[4] ? 1 : 0);
         changed = true;
     }
-    if (press[7] && i == 8) page = 3, teleport_follow = true, changed = true;
+    if (press[7] && i == 8) page = 3, tp_open(), changed = true;
     if (press[7] && i == 13) retake_listening = 1, retake_armed = false, retake_help_now(), changed = true;   // (Retake picture)
     if (press[7] && i == 10) page = 4, choose_inventory_filter(0), changed = true;
     if (i == 9 && (press[3] || press[4])) {   // (Kid | Adult: Left Kid, Right Adult, a switch when Link is the other age)
@@ -4750,26 +4879,67 @@ void menu_tick() {
             }
             if (item_choice != chosen) inventory_reveal();   // (a click on a card: its page)
         }
-    } else if (open_now.load() && page == 3) {   // the teleport list
+    } else if (open_now.load() && page == 3) {   // the Teleport page
         if (mouse) teleport_mouse(ptr, mx, my, press, changed);
-        if (press[5]) page = 0, changed = true;   // (to the Debug tab, Teleport still selected)
-        else if (press[7]) {
-            cheat_action.store(1000 + teleport_choice);
-            open_now = false, page = 0;   // (back to the game: the map change starts with an event)
-            changed = true;
-        } else if (tab_left || tab_right) {   // (the first map of the previous or next section)
-            const int section = (teleport_section_of(teleport_choice) + kTeleportSections + (tab_left ? -1 : 1)) % kTeleportSections;
-            teleport_choice = teleport_sections[section].first, teleport_follow = true;
-            changed = true;
-        } else {
-            // (the cards as drawn, each section's in rows under its heading: Up and Down a row, the column kept; Left and Right the
-            // previous and next card; Page Up and Down the rows that fit; Home and End the ends)
-            const int rows = (press[2] - press[1]) + (press[14] - press[13]) * teleport_page_rows;
-            const int was = teleport_choice;
-            if (press[15]) teleport_choice = 0;
-            else if (press[16]) teleport_choice = kTeleports - 1;
-            else teleport_choice = std::clamp(teleport_step_rows(teleport_choice, rows) + (press[4] - press[3]), 0, kTeleports - 1);
-            if (teleport_choice != was) teleport_follow = true, changed = true;
+        bool tp_age_button = false;   // (Kid / Adult: the controller's X as the game has it bound, or the X key)
+        {
+            static bool x_held = false;
+            const bool x_down = mine && (GetAsyncKeyState('X') & 0x8000) != 0;
+            if (host && host->binding) {
+                const int b = host->binding(HOS_BIND_PAD, HOS_SW_X, 0);
+                if (b >= menu_keys::kSouth && b <= menu_keys::kNorth) tp_pad_x = b;
+            }
+            tp_age_button = (x_down && !x_held) || pad(tp_pad_x);
+            x_held = x_down;
+        }
+        const auto& areas = tp_areas_of(tp_age);
+        const int n_areas = (int)areas.size();
+        if (tp_asking) {   // (the Travel question: Left and Right choose, confirm does it, back closes it)
+            if (press[3] || press[4]) tp_ask_sel = press[3] ? 0 : 1, changed = true;
+            if (press[5] || (press[7] && tp_ask_sel == 1)) tp_asking = false, changed = true;
+            else if (press[7]) {
+                cheat_action.store(OOT_PLACE_ACTION + tp_place_now() * 2 + tp_age);
+                logf("menu: Teleport to %s (%s), %s", oot_tp_places[tp_place_now()].label, tp_area_now().title, tp_age ? "adult" : "child");
+                tp_asking = false, open_now = false, page = 0;   // (back to the game: the map change starts with an event)
+                changed = true;
+            }
+        } else if (tp_age_button) {   // (X: the other age's areas, the area and place kept where the other list has them)
+            tp_set_age(tp_age ^ 1), tp_on_age = false, changed = true;
+        } else if (press[5]) {
+            page = 0, changed = true;   // (to the Debug tab, Teleport still selected)
+        } else if (tab_left || tab_right) {   // (the first area of the previous or next region)
+            const int region = oot_tp_areas[areas[tp_area[tp_age]]].region;
+            int k = tp_area[tp_age];
+            if (tab_right) {
+                while (k < n_areas && oot_tp_areas[areas[k]].region == region) ++k;
+                if (k >= n_areas) k = 0;
+            } else {
+                while (k > 0 && oot_tp_areas[areas[k - 1]].region == region) --k;   // (this region's first)
+                k = k > 0 ? k - 1 : n_areas - 1;
+                while (k > 0 && oot_tp_areas[areas[k - 1]].region == oot_tp_areas[areas[k]].region) --k;   // (the previous one's)
+            }
+            tp_area[tp_age] = k, tp_place = 0, tp_focus = 0, tp_on_age = false, changed = true;
+        } else if (tp_focus == 0 && tp_on_age) {   // (Kid | Adult: Left Kid, Right Adult, Down to the areas)
+            if ((press[3] && tp_age) || (press[4] && !tp_age)) tp_set_age(press[4] ? 1 : 0), changed = true;
+            if (press[2] || press[7]) tp_on_age = false, changed = true;
+        } else if (tp_focus == 0) {   // (the areas: Up and Down; Up past the first, Kid | Adult; Right or confirm, its places)
+            const int was = tp_area[tp_age];
+            int k = was + (press[2] - press[1]) + (press[14] - press[13]) * 8;
+            if (press[15]) k = 0;
+            if (press[16]) k = n_areas - 1;
+            if (k < 0) tp_on_age = true, k = 0;
+            tp_area[tp_age] = std::clamp(k, 0, n_areas - 1);
+            if (tp_area[tp_age] != was) tp_place = 0;
+            if (press[4] || press[7]) tp_focus = 1;
+            changed |= tp_area[tp_age] != was || tp_on_age || press[4] || press[7];
+        } else {   // (the places: Up and Down; Left back to the areas; confirm asks)
+            const int n = tp_area_now().count, was = tp_place;
+            tp_place = std::clamp(tp_place + (press[2] - press[1]), 0, n - 1);
+            if (press[15]) tp_place = 0;
+            if (press[16]) tp_place = n - 1;
+            if (press[3]) tp_focus = 0;
+            if (press[7]) tp_asking = true, tp_ask_sel = 0;
+            changed |= tp_place != was || press[3] || press[7];
         }
     } else if (open_now.load()) {
         if (mouse) {   // (the mouse: see the top of this file)

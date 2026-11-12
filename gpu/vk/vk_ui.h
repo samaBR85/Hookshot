@@ -172,11 +172,12 @@ inline void glow(Ctx& c, ImVec2 a0, ImVec2 b0) {
 inline void gold(Ctx& c, ImVec2 a0, ImVec2 b0) { c.d->AddRectFilledMultiColor(a0, b0, kGoldHi, kGoldHi, kGold, kGold); }
 
 // ---- the button prompts: the keys, or a controller's buttons by position (any layout: the dot lit) ----
-enum Glyph { kUpDown, kLeftRight, kTabs, kConfirm, kBack, kKey, kCompact };
+enum Glyph { kUpDown, kLeftRight, kTabs, kConfirm, kBack, kKey, kCompact, kFace };   // (kFace: a face button, dot; key: its key)
 struct Prompt {
     Glyph g;
     const char* what;
     const char* key = nullptr;   // (kKey: a key's name, shown with the keys and with a controller alike)
+    int dot = 0;                 // (kFace: the face button's dot, 0 the top, 1 the right, 2 the left, 3 the bottom)
 };
 /// One glyph at p (its top left; the line px + 10 points high); its width. draw false: measured only
 inline float glyph(Ctx& c, float px, ImVec2 p, const Prompt& pr, bool draw) {
@@ -220,6 +221,7 @@ inline float glyph(Ctx& c, float px, ImVec2 p, const Prompt& pr, bool draw) {
             return w + 3 * s + key(p.x + w + 3 * s, "E");
         }
         case kConfirm: return key(p.x, "Enter");
+        case kFace: return key(p.x, pr.key);
         default: return key(p.x, "Esc");
         }
     }
@@ -246,7 +248,7 @@ inline float glyph(Ctx& c, float px, ImVec2 p, const Prompt& pr, bool draw) {
         c.d->AddRectFilled(m - ImVec2(len, arm), m + ImVec2(len, arm), v ? dim : ink, arm * 0.5f);
         c.d->AddRectFilled(m - ImVec2(arm, arm), m + ImVec2(arm, arm), ink);
     } else {   // (the face buttons, four dots: the bottom one confirms, the right one goes back)
-        const int lit = pr.g == kConfirm ? c.confirm_dot : c.back_dot;   // (0 top, 1 right, 2 left, 3 bottom)
+        const int lit = pr.g == kConfirm ? c.confirm_dot : pr.g == kFace ? pr.dot : c.back_dot;   // (0 top, 1 right, 2 left, 3 bottom)
         const ImVec2 at[4] = {m + ImVec2(0, -r * 0.5f), m + ImVec2(r * 0.5f, 0), m + ImVec2(-r * 0.5f, 0), m + ImVec2(0, r * 0.5f)};
         for (int i = 0; i < 4; i++) {
             if (i == lit) c.d->AddCircleFilled(at[i], r * 0.27f, ink);

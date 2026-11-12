@@ -2335,6 +2335,10 @@ def main(a=None):
     elif run(PY + [os.path.join(HERE, "prompt_assets.py"), "--romfs", romfs, "--out", prompts], check=False, output=sys.stderr):
         print("the button prompts of other controllers were not made: the game shows its own", flush=True)
         shutil.rmtree(prompts, ignore_errors=True)
+    # (hookshot) the Teleport places' positions, arrival events and story flags (gpu/vk/oot_tp_places_data.h), from the player's
+    # own maps (nx2/teleport_places.py, zstandard alone). Without them the places arrive with the plain event and take no pictures
+    if run(PY + [os.path.join(HERE, "teleport_places.py"), "--romfs", romfs, "--out", out], check=False, output=sys.stderr):
+        print("the Teleport places' data was not made: they arrive with the plain event and take no pictures", flush=True)
     icon = os.path.join(ROOT, "assets", "hookshot.png")
     if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
         copy_writable(icon, os.path.join(out, "hookshot.png"))   # (a second build overwrites the first's)
