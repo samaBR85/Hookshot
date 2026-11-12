@@ -3686,6 +3686,43 @@ ImTextureData* teleport_picture(int i) {
     return teleport_tex;
 }
 
+/// A line centred on cx, its first line's middle at y; when wider than room, in two lines of about the same width, cut at the
+/// space nearest its middle (dropped), or in a text without spaces (Japanese, Chinese) at the character nearest it. The text
+/// is the menu's English: the language's own is measured and cut (the pieces are drawn as they are)
+void balanced_centre(ui::Ctx& c, ImFont* f, float px, float cx, float y, float room, ImU32 col, const char* english) {
+    const std::string t = i18n::tr(english);
+    if (ui::size_of(f, px, t.c_str()).x <= room) {
+        ui::text_mid_centre(c, f, px, cx, y, col, t.c_str());
+        return;
+    }
+    const bool spaced = t.find(' ') != std::string::npos;
+    const std::vector<size_t> at = char_starts(t);
+    size_t best = 0, skip = 0;
+    float diff = FLT_MAX;
+    for (size_t k = 1; k + 1 < at.size(); ++k) {
+        const size_t cut = at[k];
+        if (spaced && t[cut] != ' ') continue;
+        const size_t next = spaced ? cut + 1 : cut;
+        float d = std::fabs(ui::size_of(f, px, t.substr(0, cut).c_str()).x - ui::size_of(f, px, t.substr(next).c_str()).x);
+        if (spaced) {   // (a word of one or two letters, "at", "a", "de", goes down with the word it leads, not left at the end)
+            const size_t word = t.rfind(' ', cut - 1);
+            if (cut - (word == std::string::npos ? 0 : word + 1) <= 2) d += 4 * px;
+        } else {   // (Japanese, Chinese: a cut after a particle or a comma, not inside a word, unless none is near the middle)
+            static const char* const after[] = {"に", "を", "が", "は", "で", "と", "の", "も", "へ", "、", "，", "。"};
+            bool good = false;
+            for (const char* a : after) good |= cut >= strlen(a) && !t.compare(cut - strlen(a), strlen(a), a);
+            if (!good) d += 4 * px;
+        }
+        if (d < diff) diff = d, best = cut, skip = next - cut;
+    }
+    if (!best) {
+        ui::text_mid_centre(c, f, px, cx, y, col, t.c_str());
+        return;
+    }
+    ui::text_mid_centre(c, f, px, cx, y, col, t.substr(0, best).c_str());
+    ui::text_mid_centre(c, f, px, cx, y + px * 1.3f, col, t.substr(best + skip).c_str());
+}
+
 void draw_teleport(ui::Ctx& c) {
     const float s = c.s;
     char count[32];
@@ -3726,7 +3763,8 @@ void draw_teleport(ui::Ctx& c) {
         c.d->AddLine(ImVec2(cx - rule - 9 * s, cy), ImVec2(cx - 9 * s, cy), ui::alpha(ui::kAccent, 0.8f), std::max(1.0f, s));
         c.d->AddLine(ImVec2(cx + 9 * s, cy), ImVec2(cx + rule + 9 * s, cy), ui::alpha(ui::kAccent, 0.8f), std::max(1.0f, s));
         ui::diamond(c, ImVec2(cx, cy), 4 * s, ui::kGoldHi);
-        ui::text_mid_centre(c, c.f.body, 15 * s, cx, cy + 26 * s, ui::kDim, "Taken the first time Link stays here a few seconds");
+        balanced_centre(c, c.f.body, 15 * s, cx, cy + 26 * s, (ib.x - ia.x) * 0.7f, ui::kDim,
+                        "Taken the first time Link stays at this location for a few seconds.");
         help_top = b.y + 14 * s;
     }
     if (!narrow)
