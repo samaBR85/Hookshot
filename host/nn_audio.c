@@ -486,6 +486,105 @@ static void effects_frame(int mix) {
     }
 }
 
+/* ---- the mixer ------------------------------------------------------------------------------------------------- */
+static void biquad_frame(float *samples, const float b[3], const float a[2], float z[2]) {
+    float z0 = z[0], z1 = z[1];
+    for (int i = 0; i < FRAME; i++) {
+        const float x = samples[i], y = b[0] * x + z0;
+        /* The denominator is already negated: a one-pole low pass has b0 = 1 - p, a1 = p. */
+        z0 = b[1] * x + a[0] * y + z1;
+        z1 = b[2] * x + a[1] * y;
+        samples[i] = y;
+    }
+    if (!isfinite(z0) || !isfinite(z1)) {
+        z0 = z1 = 0;
+        memset(samples, 0, FRAME * sizeof *samples);
+    }
+    z[0] = z0;
+    z[1] = z1;
+}
+
+static void render_voice(Voice *v) {
+    /* (a started voice without a destination still plays, as on the DSP: its buffers run out and are released) */
+    if (v->state != PLAY_STARTED) return;
+    if (v->snap) {   /* (just started, or a new destination: its volumes at once) */
+        v->snap = 0;
+        v->ramp_volume = v->volume;
+        memcpy(v->ramp_vol, v->vol, sizeof v->ramp_vol);
+        if (v->dest_kind == DEST_SPLITTER && splitters[v->dest].used)
+            memcpy(splitters[v->dest].ramp, splitters[v->dest].vol, sizeof splitters[v->dest].ramp);
+    }
+    const double step = (double)v->rate * (v->pitch > 0 ? v->pitch : 1.0) / RATE;
+    float out[MAX_CH][FRAME];
+    int any = 0;
+    /* volumes ramp from the last frame's to the new ones over the frame, as the console's DSP does (a jump clicks) */
+    const float vol0 = v->ramp_volume, dvol = (v->volume - v->ramp_volume) / FRAME;
+    for (int i = 0; i < FRAME; i++) {
+        v->frac += step;
+        while (v->frac >= 1.0) {
+            v->frac -= 1.0;
+            memcpy(v->prev, v->cur, sizeof v->prev);
+            if (!next_source_frame(v)) memset(v->cur, 0, sizeof v->cur);
+            else any = 1;
+        }
+        const float t = (float)v->frac, gain = vol0 + dvol * (float)(i + 1);
+        for (int ch = 0; ch < v->channels; ch++) out[ch][i] = (v->prev[ch] + (v->cur[ch] - v->prev[ch]) * t) * gain;
+    }
+    v->ramp_volume = v->volume;
+    (void)any;
+    /* the biquad filters (transposed direct form II, as the DSP's) */
+    for (int f = 0; f < 2; f++) {
+        if (!v->bq_on[f]) continue;
+        for (int ch = 0; ch < v->channels && ch < MAX_CH; ch++)
+            biquad_frame(out[ch], v->bq_b[f], v->bq_a[f], v->bq_z[f][ch]);
+    }
+    if (v->hushed) memset(out, 0, sizeof out);   /* (hookshot: it plays on, unheard, and its buffers are released) */
+    if (v->dest_kind == DEST_MIX && mixes[v->dest].used) {
+        Mix *m = &mixes[v->dest];
+        for (int ch = 0; ch < v->channels; ch++)
+            for (int b = 0; b < m->buffers; b++) {
+                const float g0 = v->ramp_vol[ch][b], g1 = v->vol[ch][b];
+                if (g0 == 0.0f && g1 == 0.0f) continue;
+                const float dg = (g1 - g0) / FRAME;
+                for (int i = 0; i < FRAME; i++) m->buf[b][i] += out[ch][i] * (g0 + dg * (float)(i + 1));
+            }
+    } else if (v->dest_kind == DEST_SPLITTER && splitters[v->dest].used) {
+        Splitter *s = &splitters[v->dest];
+        for (int d = 0; d < s->dests; d++) {
+            const int mi = s->dest_mix[d];
+            if (mi < 0 || !mixes[mi].used) continue;
+            Mix *m = &mixes[mi];
+            for (int f = 0; f < 2; f++)
+                if (v->split_bq_epoch[d][f] != s->bq_epoch[d][f]) {
+                    memset(v->split_bq_z[d][f], 0, sizeof v->split_bq_z[d][f]);
+                    v->split_bq_epoch[d][f] = s->bq_epoch[d][f];
+                }
+            for (int ch = 0; ch < v->channels && ch < MAX_CH; ch++) {
+                float filtered[FRAME];
+                const float *samples = out[ch];
+                if (s->bq_on[d][0] || s->bq_on[d][1]) {
+                    memcpy(filtered, out[ch], sizeof filtered);
+                    for (int f = 0; f < 2; f++)
+                        if (s->bq_on[d][f]) biquad_frame(filtered, s->bq_b[d][f], s->bq_a[d][f], v->split_bq_z[d][f][ch]);
+                    samples = filtered;
+                }
+                for (int b = 0; b < m->buffers; b++) {
+                    const float g0 = s->ramp[d][ch][b], g1 = s->vol[d][ch][b];
+                    if (g0 == 0.0f && g1 == 0.0f) continue;
+                    const float dg = (g1 - g0) / FRAME;
+                    for (int i = 0; i < FRAME; i++) m->buf[b][i] += samples[i] * (g0 + dg * (float)(i + 1));
+                }
+            }
+        }
+    }
+    memcpy(v->ramp_vol, v->vol, sizeof v->ramp_vol);   /* (splitters catch up in render_frame) */
+}
+
+static int mix_depth(int i, int guard) {   /* how many sub mixes lie between this one and the final mix */
+    if (guard > MAX_MIXES || mixes[i].final_mix || mixes[i].dest_kind != DEST_MIX) return 0;
+    return 1 + mix_depth(mixes[i].dest, guard + 1);
+}
+
 /* ---- (hookshot) the item wheel's sounds ------------------------------------------------------------------------ */
 /* <game folder>/wheel/sounds.bin (nx2/wheel_sounds.py, run by make_game.py: the item row's own sounds, decoded from the RomFS), read
    at the first use. hos_audio_cue plays one over the game's output. While the wheel steers the game's hidden row
@@ -587,105 +686,6 @@ static void wheel_cues_frame(float out[][FRAME]) {   /* over the game's front le
         }
         if (cues[k].pos >= w->frames) cues[k].s = -1;
     }
-}
-
-/* ---- the mixer ------------------------------------------------------------------------------------------------- */
-static void biquad_frame(float *samples, const float b[3], const float a[2], float z[2]) {
-    float z0 = z[0], z1 = z[1];
-    for (int i = 0; i < FRAME; i++) {
-        const float x = samples[i], y = b[0] * x + z0;
-        /* The denominator is already negated: a one-pole low pass has b0 = 1 - p, a1 = p. */
-        z0 = b[1] * x + a[0] * y + z1;
-        z1 = b[2] * x + a[1] * y;
-        samples[i] = y;
-    }
-    if (!isfinite(z0) || !isfinite(z1)) {
-        z0 = z1 = 0;
-        memset(samples, 0, FRAME * sizeof *samples);
-    }
-    z[0] = z0;
-    z[1] = z1;
-}
-
-static void render_voice(Voice *v) {
-    /* (a started voice without a destination still plays, as on the DSP: its buffers run out and are released) */
-    if (v->state != PLAY_STARTED) return;
-    if (v->snap) {   /* (just started, or a new destination: its volumes at once) */
-        v->snap = 0;
-        v->ramp_volume = v->volume;
-        memcpy(v->ramp_vol, v->vol, sizeof v->ramp_vol);
-        if (v->dest_kind == DEST_SPLITTER && splitters[v->dest].used)
-            memcpy(splitters[v->dest].ramp, splitters[v->dest].vol, sizeof splitters[v->dest].ramp);
-    }
-    const double step = (double)v->rate * (v->pitch > 0 ? v->pitch : 1.0) / RATE;
-    float out[MAX_CH][FRAME];
-    int any = 0;
-    /* volumes ramp from the last frame's to the new ones over the frame, as the console's DSP does (a jump clicks) */
-    const float vol0 = v->ramp_volume, dvol = (v->volume - v->ramp_volume) / FRAME;
-    for (int i = 0; i < FRAME; i++) {
-        v->frac += step;
-        while (v->frac >= 1.0) {
-            v->frac -= 1.0;
-            memcpy(v->prev, v->cur, sizeof v->prev);
-            if (!next_source_frame(v)) memset(v->cur, 0, sizeof v->cur);
-            else any = 1;
-        }
-        const float t = (float)v->frac, gain = vol0 + dvol * (float)(i + 1);
-        for (int ch = 0; ch < v->channels; ch++) out[ch][i] = (v->prev[ch] + (v->cur[ch] - v->prev[ch]) * t) * gain;
-    }
-    v->ramp_volume = v->volume;
-    (void)any;
-    /* the biquad filters (transposed direct form II, as the DSP's) */
-    for (int f = 0; f < 2; f++) {
-        if (!v->bq_on[f]) continue;
-        for (int ch = 0; ch < v->channels && ch < MAX_CH; ch++)
-            biquad_frame(out[ch], v->bq_b[f], v->bq_a[f], v->bq_z[f][ch]);
-    }
-    if (v->hushed) memset(out, 0, sizeof out);   /* (hookshot: it plays on, unheard, and its buffers are released) */
-    if (v->dest_kind == DEST_MIX && mixes[v->dest].used) {
-        Mix *m = &mixes[v->dest];
-        for (int ch = 0; ch < v->channels; ch++)
-            for (int b = 0; b < m->buffers; b++) {
-                const float g0 = v->ramp_vol[ch][b], g1 = v->vol[ch][b];
-                if (g0 == 0.0f && g1 == 0.0f) continue;
-                const float dg = (g1 - g0) / FRAME;
-                for (int i = 0; i < FRAME; i++) m->buf[b][i] += out[ch][i] * (g0 + dg * (float)(i + 1));
-            }
-    } else if (v->dest_kind == DEST_SPLITTER && splitters[v->dest].used) {
-        Splitter *s = &splitters[v->dest];
-        for (int d = 0; d < s->dests; d++) {
-            const int mi = s->dest_mix[d];
-            if (mi < 0 || !mixes[mi].used) continue;
-            Mix *m = &mixes[mi];
-            for (int f = 0; f < 2; f++)
-                if (v->split_bq_epoch[d][f] != s->bq_epoch[d][f]) {
-                    memset(v->split_bq_z[d][f], 0, sizeof v->split_bq_z[d][f]);
-                    v->split_bq_epoch[d][f] = s->bq_epoch[d][f];
-                }
-            for (int ch = 0; ch < v->channels && ch < MAX_CH; ch++) {
-                float filtered[FRAME];
-                const float *samples = out[ch];
-                if (s->bq_on[d][0] || s->bq_on[d][1]) {
-                    memcpy(filtered, out[ch], sizeof filtered);
-                    for (int f = 0; f < 2; f++)
-                        if (s->bq_on[d][f]) biquad_frame(filtered, s->bq_b[d][f], s->bq_a[d][f], v->split_bq_z[d][f][ch]);
-                    samples = filtered;
-                }
-                for (int b = 0; b < m->buffers; b++) {
-                    const float g0 = s->ramp[d][ch][b], g1 = s->vol[d][ch][b];
-                    if (g0 == 0.0f && g1 == 0.0f) continue;
-                    const float dg = (g1 - g0) / FRAME;
-                    for (int i = 0; i < FRAME; i++) m->buf[b][i] += samples[i] * (g0 + dg * (float)(i + 1));
-                }
-            }
-        }
-    }
-    memcpy(v->ramp_vol, v->vol, sizeof v->ramp_vol);   /* (splitters catch up in render_frame) */
-}
-
-static int mix_depth(int i, int guard) {   /* how many sub mixes lie between this one and the final mix */
-    if (guard > MAX_MIXES || mixes[i].final_mix || mixes[i].dest_kind != DEST_MIX) return 0;
-    return 1 + mix_depth(mixes[i].dest, guard + 1);
 }
 
 static void render_frame(int16_t *pcm, int channels) {   /* 240 frames of the device's 2 or 6 channels */
