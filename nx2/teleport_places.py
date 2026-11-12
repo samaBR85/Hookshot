@@ -156,6 +156,8 @@ def main():
         events = arrive.get((banc, spawn), {})
         # (the one most entrances play; on a tie the map's own variant, Dm_SY_BancChangeArrive_<map>_NN, over the plain one)
         event = max(sorted(events), key=lambda e: (events[e], len(e))) if events else "Dm_SY_BancChangeArrive"
+        if (banc, spawn) not in reached:
+            event = ""   # (no entrance leads there: warped to, as the Fast Travel mod does; the plain event left it black)
         out.append((key, at, event, (banc, spawn) not in reached))
     dst = os.path.join(a.out, "teleport_places.bin")
     with open(dst + ".tmp", "wb") as f:
