@@ -4660,7 +4660,7 @@ static ImVec2 wheel_slot_at(int i, ImVec2 c, float ring_r) {
 struct WheelIcon {
     char name[48];
     int cell;
-    float off_x, off_y;   // (where the drawing's own middle is, from the picture's, in pictures: the game's icons are not all centred)
+    float off_x, off_y;   // (where the drawing's own middle is, from the picture's, in pictures: 0 but for the bow and the hammer)
 };
 static std::vector<WheelIcon> wheel_icons;
 static ImTextureData* wheel_atlas = nullptr;
@@ -4690,7 +4690,9 @@ static void wheel_icons_load() {
             if (fread(ic.name, 1, sizeof ic.name, f) != sizeof ic.name || fread(px.data(), 1, bytes, f) != bytes) break;
             ic.name[sizeof ic.name - 1] = 0;
             ic.cell = (int)wheel_icons.size();
-            {   // (the drawing's box: its pixels more than faintly opaque; drawn with its middle on the slot's)
+            // (the drawing's box, for the icons whose drawing sits off the picture's middle: the bow and the hammer. Not for every
+            // icon: the spells' leaves differ, and centred by their boxes they moved from one to the next)
+            if (!std::strcmp(ic.name, "Weapon_Range_Bow") || !std::strcmp(ic.name, "Item_Hammer")) {
                 const int s = (int)hd[2];
                 int x0 = s, y0 = s, x1 = -1, y1 = -1;
                 for (int y = 0; y < s; y++)
