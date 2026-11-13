@@ -401,6 +401,7 @@ void hos_display_loop(void) {
 }
 
 /* (hookshot) The item wheel's mouse (host/display.c on Windows): not here yet, the wheel takes the stick only */
+int hos_mouse_wheel_take(void) { return 0; }   /* (the mouse wheel's notches for the item wheel's pages: none here) */
 void hos_wheel_mouse_open(int open) { (void)open; }
 int hos_wheel_pointer(int32_t *x, int32_t *y, int32_t *w, int32_t *h, int *clicked, int32_t *click_x, int32_t *click_y) {
     *x = *y = *w = *h = 0, *clicked = 0, *click_x = *click_y = 0;

@@ -7881,8 +7881,13 @@ static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture
 /// with the Item wheel row on: that picture before the game draws its HUD on it, the wheel's backdrop
 /// (vk_framegen.h framegen_wheel_scene). With the row off (the default) it returns at once
 void wheel_scene_note(VkCommandBuffer cmd, const NvnState& s, const Program& p, bool stood_in) {
-    if (!framegen_wheel_on() || p.stages.empty() || (!stood_in && !gameplay_network(p.key))) return;
+    if (!framegen_wheel_on() || p.stages.empty()) return;
     const Stage& st = p.stages[0];
+    // (the game's gameplay upscales: the 4/3 network and the full-size pass by their keys, the Render resolution row's fixed
+    // shares by their shape, a network sampling one texture into one image, as temporal_stand_in takes them)
+    if (!stood_in && !gameplay_network(p.key) &&
+        !(st.info.uses_cooperative_matrix && st.info.texture_descriptors.size() == 1 && st.info.image_descriptors.size() == 1))
+        return;
     if (st.info.image_descriptors.empty()) return;
     const auto& od = st.info.image_descriptors[0];
     Texture* out = nullptr;

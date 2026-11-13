@@ -535,7 +535,7 @@ HDR, Detail, and GPU and memory (last: the rows to change when something is wron
   down). For one run, `HOS_AUDIO_CHANNELS=2` or `6` chooses stereo or 5.1 and wins over the menu.
 - **Item wheel:** On shows the items of the R and L item row in a wheel, as in Twilight Princess: hold R or L, point at
   an item with either stick or the mouse, and let go (or click it) to equip it. Off is the game's own row. The items are
-  on pages of 8 fixed slots, the child's and the adult's apart, turned with the D-pad or ZL and ZR; Y takes an item up
+  on pages of 8 fixed slots, the child's and the adult's apart, turned with the D-pad, ZL and ZR or the mouse wheel; Y takes an item up
   and puts it in another slot (on any page), B puts it back. The pages are kept in `wheel_layout.txt` in the game folder
   (delete it for the ones the game starts with). The items are named as the game names them, in its language.
 - **Cycle items:** a tap of R puts the next item of the ZR item's kind on ZR, a tap of L the one before, without the

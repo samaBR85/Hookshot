@@ -922,7 +922,7 @@ static int slot_under(int32_t px, int32_t py, int32_t w, int32_t h, int count) {
      kept until it points 30 degrees from that slot's middle (a stick between two slots does not flicker), the pick kept
      when the stick is let go;
    - the right stick points as the left one does (the one pushed further wins);
-   - the D-pad's Left and Right, and ZL and ZR, turn the page (the game sees none of them);
+   - the D-pad's Left and Right, ZL and ZR, and the mouse wheel turn the page (the game sees none of them);
    - a pick chooses its item; the row is turned to the item's place with D-pad taps, and R stays held for the game until
      the row is there (at most 4 s after the player let go, and only while the row is shown: the game closing it ends the
      R and the taps at once, row_gone).
@@ -1059,6 +1059,12 @@ uint64_t hos_wheel_input(uint64_t buttons, int32_t stick[4]) {
     const uint64_t pressed = buttons & ~prev_buttons;
     prev_buttons = buttons;
     int turn = (pressed & ((1ULL << B_RIGHT) | (1ULL << B_ZR))) ? 1 : (pressed & ((1ULL << B_LEFT) | (1ULL << B_ZL))) ? -1 : 0;
+    {   /* (the mouse wheel too: down the next page, up the one before; read each frame the wheel is open, display.c keeps
+           its notches only while they are read) */
+        int hos_mouse_wheel_take(void);
+        const int notches = hos_mouse_wheel_take();
+        if (!turn && notches) turn = notches > 0 ? -1 : 1;
+    }
     buttons &= ~((1ULL << B_LEFT) | (1ULL << B_RIGHT) | (1ULL << B_UP) | (1ULL << B_DOWN) | (1ULL << B_ZL) | (1ULL << B_ZR));
     if (turn && pages > 1) {
         page = (page + turn + pages) % pages;
@@ -1107,6 +1113,14 @@ uint64_t hos_wheel_input(uint64_t buttons, int32_t stick[4]) {
     /* (the slot pointed at stays pointed at once the stick is let go: Y and the ring act on it) */
     if (pick >= 0) pointed = pick;
     pick = pointed;
+    /* (an empty slot pointed at, by the stick or the mouse: the item chosen before is let go, and letting go of R or a
+       click keeps the item that was on ZR) */
+    if (pick >= 0 && moving < 0 && chosen >= 0 && !(items >> pick & 1) && (int)(laid >> 8) == page) {
+        chosen = -1;
+        choose(-1);
+        if (start_home >= 0) home = start_home, __atomic_store_n(&wheel_home, home, __ATOMIC_RELEASE);
+        if (wheel_trace()) hos_log("wheel: an empty slot pointed at: nothing chosen");
+    }
     __atomic_store_n(&wheel_pick, pick, __ATOMIC_RELEASE);
     if (pick >= 0 && pick != cued) hos_audio_cue("SE_Sys_ShortCut_CursolMove_00");
     cued = pick >= 0 ? pick : cued;
