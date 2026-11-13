@@ -453,6 +453,7 @@ bool begin(uint32_t w, uint32_t h) {
     io.DeltaTime = last && now > last ? std::min((float)((now - last) / 1e9), 0.25f) : 1.0f / 60.0f;
     last = now;
     script_fonts(i18n::lang_code());   // (the menu's language's letters: merged in once, before the frame)
+    script_fonts(i18n::game_language().c_str());   // (hookshot: the game's language's too, for the item wheel's names: vk_menu.cpp)
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
     bake_some();

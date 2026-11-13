@@ -116,6 +116,9 @@ screen. It costs some GPU time on cards that cull quickly, so it is off unless s
 | `HOOKSHOT_NO_UPDATE_CHECK=1` | No look for a newer release at the start |
 | `HOS_TRACE=1` | Every Horizon call logged, as `--trace` does |
 | `HOS_WHEEL_TRACE=1` | The item wheel's openings, items, D-pad taps and the R it keeps held, logged (`host/oot_wheel.c`) |
+| `HOS_CYCLE_ITEMS=0` to `3` | Over the Cycle items row for one run (`host/oot_wheel.c`): off, Basic, + Bombs, + Tools |
+| `HOS_WHEEL_HOLD_MS=<ms>` | How long R or L is held before the wheel opens while Cycle items is on: 250 by default, 50 to 2000 (`host/oot_wheel.c`) |
+| `HOS_WHEEL_TAP_FRAMES=<n>` | The frames a D-pad tap of the item wheel's hidden row is held, and as many let go: 1 by default, 1 to 8 (`host/oot_wheel.c`) |
 | `RX_BACKEND=<name>` | Unset or `vulkan`: `hookshot_vk.dll`; any other value: the WebGPU renderer, when the exe was built with one |
 | `HOS_GPU_ALLOC_RETRY=0` | A model's material-block allocations from a full heap (the OptimizeChangeBank thread's two CPU buffers and two GPU-memory calls in f_804566e0) not tried in the heap's parents, as shipped (`host/oot_heap_retry.c`, issue 1697) |
 | `HOS_GPU_ALLOC_TEST_FAIL=<n>` or `<gpu>,<cpu>` | A test: the first n of those allocations of each kind (or that many of the GPU memory and of the CPU buffers) refused by the heap they name, as a full heap would, so the retry runs |

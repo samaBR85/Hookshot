@@ -5049,6 +5049,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_CHEAT_CAMERA) return menu_free_camera();
         if (id == HOS_OPT_CHEAT_SPEED) return menu_link_speed();
         if (id >= OOT_CHEAT_ITEM_BASE && id < OOT_CHEAT_ITEM_BASE + 4096) return menu_item_count(id - OOT_CHEAT_ITEM_BASE);
+        if (id >= OOT_CHEAT_AGE_ID && id <= OOT_CHEAT_AGE_ID) return menu_link_age();   // (Link's age, for the item wheel's pages)
         if (id == HOS_OPT_HDR_NATIVE) return dev.hdr && opts.hdr == 2;
         if (id == HOS_OPT_HDR_TONEMAP) return scene_tonemap_on();
         if (id == HOS_OPT_HDR_PEAK) return std::clamp(opts.hdr_peak, 400, 10000);
@@ -5063,6 +5064,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_FOV) return opts.fov;
         if (id == HOS_OPT_SKIP_OPENING) return opts.skip_opening;
         if (id == HOS_OPT_ITEM_WHEEL) return opts.item_wheel != 0;
+        if (id == HOS_OPT_CYCLE_ITEMS) return opts.cycle_items;
         return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !temporal_full_scale() : id == 3 ? (temporal_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 5 ? opts.text_speed : id == 6 ? opts.mouse_native :
                id == 7 ? opts.mouse_sens : id == 8 ? opts.mouse_invert : id == 9 ? opts.rumble : id == 16 ? opts.invert_cam_x : id == 17 ? opts.invert_cam_y : id == HOS_OPT_GYRO ? opts.gyro : id == HOS_OPT_GYRO_SENS_X ? opts.gyro_sens_x : id == HOS_OPT_GYRO_SENS_Y ? opts.gyro_sens_y : id == HOS_OPT_GYRO_INV_X ? opts.gyro_inv_x : id == HOS_OPT_GYRO_INV_Y ? opts.gyro_inv_y : id == HOS_OPT_GYRO_DEADZONE ? opts.gyro_deadzone :
                id == HOS_OPT_DLSS_JITTER_W || id == HOS_OPT_DLSS_JITTER_H || id == HOS_OPT_DLSS_JITTER_PHASES ? jitter_option(id) : 0;

@@ -2480,6 +2480,9 @@ def main(a=None):
     if run(PY + [os.path.join(HERE, "wheel_sounds.py"), "--romfs", romfs, "--out", os.path.join(wheel, "sounds.bin")],
            check=False, output=sys.stderr):
         print("the item wheel's sounds were not made: its scroll tick is silent", flush=True)
+    if run(PY + [os.path.join(HERE, "wheel_names.py"), "--romfs", romfs, "--out", os.path.join(wheel, "names.bin")],
+           check=False, output=sys.stderr):
+        print("the item wheel's names were not made: it names the items in English", flush=True)
     # (hookshot) the button prompts of other controllers (host/prompts.c): the game's icon font redrawn per controller, with fontTools.
     # Without it the game shows its own icons
     prompts = os.path.join(out, "prompts")

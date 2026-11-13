@@ -138,7 +138,7 @@ static void menus_mouse(HWND w, int insert_open, int game_open) { (void)w; (void
 static void gm_cursor_off(HWND w) { (void)w; unexpected(); }
 /* (hookshot: the item wheel takes the mouse while it is open, WM_APP + 20 and its clicks; never run here either) */
 static volatile LONG wheel_click, wheel_click_x, wheel_click_y;
-static int wheel_open_now;
+static int wheel_open_now, wheel_cursor_hidden, wheel_mx, wheel_my;   /* (the pointer hidden as the wheel opens: host/display.c) */
 static LONG InterlockedExchange(volatile LONG *target, LONG value) { (void)target; (void)value; unexpected(); return 0; }
 static void wheel_mouse(HWND w, int open) { (void)w; (void)open; unexpected(); }
 

@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 23   /* (23: the item wheel, MkwVkHost wheel) */
+#define MKWVK_API_VERSION 24   /* (23: the item wheel, MkwVkHost wheel; 24: its pages of 8 slots) */
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -53,6 +53,9 @@ enum { HOS_OPT_FOV = 51 };
 enum { HOS_OPT_SKIP_OPENING = 52 };
 /* (hookshot) the Gameplay tab's Item wheel row (host/oot_wheel.c): 1 the wheel, 0 the game's own item row */
 enum { HOS_OPT_ITEM_WHEEL = 60 };
+/* (hookshot) the Gameplay tab's Cycle items row (host/oot_wheel.c): 0 off, 1 the arrows, bottles and spells, 2 and the bombs,
+   3 and the hookshot and hammer: a tap of R or L changes the ZR item within its group */
+enum { HOS_OPT_CYCLE_ITEMS = 61 };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position (the bottom face button first:
@@ -102,16 +105,22 @@ typedef struct MkwVkSetting {
     int value, lo, hi, step;
     int restart, fixed;   /* the change applies at the next start; nothing to choose on this PC (the menu shows it greyed) */
 } MkwVkSetting;
-/* (hookshot) The R button's item row shown as a wheel (host/oot_wheel.c fills it, gpu/vk/vk_menu.cpp draws it): the
-   items in the row's order, the game's cursor and the stick's pick. seq changes whenever anything else does; the
-   back end copies the whole and checks seq again (a copy made while the game side wrote is taken the next frame) */
+/* (hookshot) The R button's item row shown as a wheel (host/oot_wheel.c fills it, gpu/vk/vk_menu.cpp draws it): one
+   page of MKWVK_WHEEL_SLOTS fixed slots (slot 0 at the top, the rest clockwise, 45 degrees apart; an empty name is an
+   empty slot), the equipped item's slot and the stick's pick. seq changes whenever anything else does; the back end
+   copies the whole and checks seq again (a copy made while the game side wrote is taken the next frame) */
 #define MKWVK_WHEEL_MAX 32
+#define MKWVK_WHEEL_SLOTS 8
 typedef struct MkwVkWheel {
     volatile uint32_t seq;
     int32_t open;     /* 1 while the item row is open */
-    int32_t count;    /* items, at most MKWVK_WHEEL_MAX */
-    int32_t cursor;   /* the row's cursor: the item that is equipped when R is let go */
-    int32_t pick;     /* the slot the stick points at, -1 with the stick at rest */
+    int32_t count;    /* slots on this page (MKWVK_WHEEL_SLOTS), 0 with no item known yet */
+    int32_t cursor;   /* the equipped item's slot on this page, -1 when it is on another page */
+    int32_t pick;     /* the slot picked (the stick's, else the item chosen this opening), -1 none on this page */
+    int32_t page, pages;   /* this page, of pages (version 23) */
+    uint8_t page_kind[16];  /* each page's kind: 0 the player's, 1 the items no page names, 2 a new page (while one is moved) */
+    int32_t held;           /* the slot on this page of the item being moved (Y), -1 none or on another page */
+    char held_name[48];     /* the item being moved, "" none */
     int32_t amount[MKWVK_WHEEL_MAX];   /* the item's count, -1 for an item without one */
     char name[MKWVK_WHEEL_MAX][48];    /* the game's name (Item_DekuNut) */
     char label[MKWVK_WHEEL_MAX][32];   /* what the player reads (Deku Nuts) */

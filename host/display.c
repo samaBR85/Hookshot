@@ -265,6 +265,8 @@ static void game_menu_press(LPARAM lp, LONG bit) {
    The capture it had comes back when the wheel closes. The input thread posts WM_APP + 20 (wParam 1 open, 0 closed) */
 static volatile LONG wheel_click, wheel_click_x, wheel_click_y;
 static int wheel_open_now, captured_before_wheel;
+/* (the pointer hidden as the wheel opens, a controller's as a rule, and shown once the mouse moves 5 pixels from there) */
+static int wheel_cursor_hidden, wheel_mx, wheel_my;
 
 void hos_wheel_mouse_open(int open) {
     if (hwnd) PostMessageA(hwnd, WM_APP + 20, (WPARAM)(open != 0), 0);
@@ -298,7 +300,13 @@ static void wheel_mouse(HWND w, int open) {
             SetCursorPos(p.x, p.y);
             pointer_update(w, 0, 0);   /* (the pointer published at the middle now, not where the capture had it) */
         }
+        POINT at = {0};
+        GetCursorPos(&at);
+        ScreenToClient(w, &at);
+        wheel_mx = at.x, wheel_my = at.y, wheel_cursor_hidden = 1;
+        gm_cursor_off(w);
     } else {
+        wheel_cursor_hidden = 0;
         if (captured_before_wheel && !menu_open && !game_menu_open && GetForegroundWindow() == w) mouse_capture(w, 1);
         captured_before_wheel = 0;
     }
@@ -315,6 +323,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSEMOVE: {
         if (mouse_captured) return 0;
         const int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
+        if (wheel_open_now && wheel_cursor_hidden && (abs(x - wheel_mx) > 4 || abs(y - wheel_my) > 4)) wheel_cursor_hidden = 0;
         if (game_menu_open && !menu_open && (x != gm_mx || y != gm_my)) {   /* (a move: not a repeat at rest) */
             gm_mx = x, gm_my = y;
             gm_mouse_used();
@@ -452,7 +461,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         hos_pointer_reset(&game_pointer);
         break;
     case WM_SETCURSOR:
-        if ((mouse_captured || (game_menu_open && !menu_open && !gm_cursor_shown())) && LOWORD(lp) == HTCLIENT) {
+        if ((mouse_captured || (game_menu_open && !menu_open && !gm_cursor_shown()) ||
+             (wheel_open_now && wheel_cursor_hidden && !menu_open)) && LOWORD(lp) == HTCLIENT) {
             SetCursor(NULL);
             return TRUE;
         }

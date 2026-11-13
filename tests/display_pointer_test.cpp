@@ -34,6 +34,7 @@ namespace win {
 static HosPointer game_pointer = HOS_POINTER_INIT;
 static int menu_open = 1, game_menu_open;
 static LONG gm_mx, gm_my, gm_shown, play_wheel;
+static int wheel_open_now, wheel_cursor_hidden, wheel_mx, wheel_my;   // (hookshot: the item wheel's hidden pointer, host/display.c)
 static LONG64 play_wheel_ns;
 static int captured_before_menu, esc_had_capture;   // (Esc's note: host/display.c)
 static int64_t hos_now_ns() { return 100000000; }

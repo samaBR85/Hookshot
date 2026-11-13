@@ -124,6 +124,10 @@ const char* tx_framegen(int v) {
     return t[v];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
+const char* tx_cycle_items(int v) {   // (hookshot: the Cycle items row, host/oot_wheel.c)
+    static const char* t[] = {"Off", "Basic", "+ Bombs", "+ Tools"};
+    return t[v];
+}
 const char* tx_fps_level(int v) { return fps_stats::level_name(v); }
 const char* tx_fps_corner(int v) { return fps_stats::corner_name(v); }   // (the FPS counter row: Off, FPS, Frame time, Graph, Breakdown)
 const char* tx_profile(int v) { return v ? "Handheld" : "Docked"; }   // (opts.handheld: the Profile row)
@@ -1147,6 +1151,10 @@ MENU_HINTS(hn_audio_output, 0, "5.1 when the default output device has 5.1 or mo
 MENU_HINTS(hn_text_size, 0, "The game's original size.", "A little larger.", "Larger.", "Much larger.", "Largest.")
 MENU_HINTS(hn_item_wheel, 0, "The game's own row of items.",
            "A ring of all your items over the blurred game: point the left stick or the mouse at one and let go.")
+MENU_HINTS(hn_cycle_items, 0, "R and L only open the wheel, at once.",
+           "Arrows, bottles, and Din's Fire, Farore's Wind and Nayru's Love.",
+           "As Basic, and the Bomb with the Bombchu.",
+           "As + Bombs, and the Hookshot with the Megaton Hammer; for the child, the Slingshot with the Boomerang.")
 MENU_HINTS(hn_background, 0, "Only while the game's window has the focus.",
            "Also behind other windows, for streaming or other apps. The keyboard and mouse still need the game's window.")
 MENU_HINTS(hn_mousecam, 0, "The mouse stands in for the right stick, with its curve and top speed.",
@@ -1282,6 +1290,8 @@ Row rows[] = {
      "How large the text of dialogue, Navi and signs is drawn.", hn_text_size, false, true},
     {TAB_GAMEPLAY, "Item wheel", &opts.item_wheel, 0, 1, 1, tx_onoff,
      "What holding R or L shows: your items in a wheel, or the game's own row.", hn_item_wheel, false, true},
+    {TAB_GAMEPLAY, "Cycle items", &opts.cycle_items, 0, 3, 1, tx_cycle_items,
+     "A tap of R puts the next item of its kind on ZR, a tap of L the one before.", hn_cycle_items, false, true},
     {TAB_GAMEPLAY, "Microphone", &opts.mic, 0, 2 + kMaxMics, 1, tx_mic,
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},
@@ -3119,7 +3129,9 @@ void draw_options(ui::Ctx& c) {
     const char* hint = selr.value && selr.hint ? selr.hint(*selr.value, -1) : nullptr;
     if (is_share_row(selr) && !share_said.empty()) hint = share_said.c_str();   // (what the last save did)
     if (&selr == &rows[kBugReportRow]) hint = bug_report_hint();   // (the Bug report: where it was saved, or why not)
-    const std::string pending_line = (cur_tab == TAB_GRAPHICS || cur_tab == TAB_DEBUG) && restart_pending() ? restart_line(c, 16 * s, hx1 - hx0 - 66 * s) : "";
+    std::string pending_line = (cur_tab == TAB_GRAPHICS || cur_tab == TAB_DEBUG) && restart_pending() ? restart_line(c, 16 * s, hx1 - hx0 - 66 * s) : "";
+    // (hookshot: Cycle items on: the wheel waits for a short hold, said under the help with the gold mark)
+    if (pending_line.empty() && selr.value == &opts.cycle_items && opts.cycle_items) pending_line = i18n::tr("The wheel opens after a short hold");
     static float help_tall = 0, help_tall_w = 0;
     static std::string help_said;   // (Save my pipeline list's line as measured: measured again when it changes)
     if (help_tall_w != hx1 - hx0 || help_said != share_said)
@@ -4265,6 +4277,8 @@ int menu_link_speed() { return cheats_on() ? link_speeds[std::clamp(link_speed.l
 int menu_take_cheat_action() { return cheat_action.exchange(0, std::memory_order_relaxed); }
 // (hookshot) an inventory count the game side reported (OOT_CHEAT_ITEM_BASE + i), for the item wheel's numbers
 int menu_item_count(int i) { return i >= 0 && i < kItems ? item_counts[i].load(std::memory_order_relaxed) : -1; }
+// (hookshot) Link's age as the game side reported it (OOT_CHEAT_AGE_ID: 0 child, 1 adult, -1 no save), for the item wheel's pages
+int menu_link_age() { return link_age.load(std::memory_order_relaxed); }
 
 void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t window_w, uint32_t window_h) {
     const auto c = [](uint32_t v) { return (uint64_t)std::min(v, 0xffffu); };
@@ -4615,51 +4629,26 @@ void cheat_press(int i, const bool* press, bool& changed) {
         changed = true;
     }
 }
-// ---- (hookshot) the R button's item wheel (host/oot_wheel.c, host->wheel): the items in a ring round the screen's
-// centre, the first at the top and the rest clockwise; the row's cursor in gold, the item the stick points at ringed in
-// white, the chosen item's icon in the middle and its name on a banner under the ring. Drawn on Dear ImGui's draw lists
-// under the Insert menu and the FPS counter (menu_record), the game's item icons from one texture (wheel_icons_load) ----
+// ---- (hookshot) the R button's item wheel (host/oot_wheel.c, host->wheel): a page of 8 fixed slots round the screen's
+// centre, slot 0 at the top and the rest clockwise, 45 degrees apart (an empty slot drawn faint); the equipped item in
+// gold, the item the stick points at ringed in white, the chosen item's icon in the middle and its name on a banner under
+// the ring, the pages as dots under it. Drawn on Dear ImGui's draw lists under the Insert menu and the FPS counter
+// (menu_record), the game's item icons from one texture (wheel_icons_load) ----
 static MkwVkWheel wheel_now;          // (the state drawn this frame: wheel_update)
 static float wheel_spread = 1.0f;     // (the opening's animation: the slots' distance from the centre, 0.35 to 1)
 
-// The slots on one ring, or from 17 items on two: every other slot on an inner ring (staggered), so each keeps its own
-// direction (the stick and the mouse pick by direction alone) and the slots stay large. HOS_WHEEL_TWO_RINGS=<n>: two
-// rings from n items. ring_r: the (outer) ring's radius, inner_r the inner one's (ring_r on one ring)
-static bool wheel_two_rings(int count) {
-    static const int from = [] {
-        const char* e = getenv("HOS_WHEEL_TWO_RINGS");
-        return e && atoi(e) > 2 ? atoi(e) : 17;
-    }();
-    return count >= from;
-}
 constexpr float kWheelBannerGap = 3, kWheelBannerHalf = 3;   // (units: the gap above the name banner, its half height)
-static void wheel_geometry(float u, int count, float* ring_r, float* slot_r, float* centre_r, float* inner_r) {
-    const double pi = 3.14159265358979;
+// ring_r: the slots' centres' radius, slot_r a slot's, centre_r the hub's (the host's slot_under takes the hub as 12 units)
+static void wheel_geometry(float u, float* ring_r, float* slot_r, float* centre_r) {
     *centre_r = 12 * u;
-    double fit;
-    if (!wheel_two_rings(count)) {
-        *ring_r = 26 * u;   // (the slots' centres)
-        *inner_r = *ring_r;
-        fit = count > 1 ? *ring_r * std::sin(pi / count) * 0.92 : 9.0 * u;
-    } else {
-        *ring_r = 31 * u;
-        const float in = 22 * u;
-        *inner_r = in;
-        const double a = 2 * pi / count;
-        const double same = 2.0 * in * std::sin(a);   // (inner neighbours)
-        const double cross = std::sqrt((double)in * in + (double)*ring_r * *ring_r - 2.0 * in * *ring_r * std::cos(a));
-        double closest = std::min(same, cross);
-        if (count % 2) closest = std::min(closest, 2.0 * *ring_r * std::sin(a / 2));   // (the last and the first, both outer)
-        fit = closest * 0.46;
-    }
-    *slot_r = (float)std::max(3.0 * u, std::min(7.0 * u, fit));   // (a slot's radius)
+    *ring_r = 27 * u;
+    *slot_r = (float)std::min(8.0 * u, *ring_r * std::sin(3.14159265358979 / MKWVK_WHEEL_SLOTS) * 0.9);
 }
-// the name banner's centre below the wheel's: under the outer slots by the gap
+// the name banner's centre below the wheel's: under the slots by the gap
 static float wheel_banner_y(float u, float ring_r, float slot_r) { return ring_r + slot_r + (kWheelBannerGap + kWheelBannerHalf) * u; }
 // slot i's centre, wheel_spread of the way out
-static ImVec2 wheel_slot_at(int i, int n, ImVec2 c, float ring_r, float inner_r) {
-    const double a = 2 * 3.14159265358979 * i / n;
-    const double r = (wheel_two_rings(n) && i % 2 ? inner_r : ring_r) * (double)wheel_spread;
+static ImVec2 wheel_slot_at(int i, ImVec2 c, float ring_r) {
+    const double a = 2 * 3.14159265358979 * i / MKWVK_WHEEL_SLOTS, r = ring_r * (double)wheel_spread;
     return ImVec2(c.x + (float)(std::sin(a) * r), c.y - (float)(std::cos(a) * r));
 }
 
@@ -4754,13 +4743,64 @@ static const WheelIcon* wheel_icon(const char* name) {
         if (!std::strcmp(ic.name, name)) return &ic;
     return nullptr;
 }
-// an icon side px wide centred on m (its cell's texels, half a texel in from the edges)
-static void wheel_draw_icon(ui::Ctx& c, const WheelIcon& ic, ImVec2 m, float side) {
+// The items' names in the game's language: wheel/names.bin (nx2/wheel_names.py makes it from the game's messages at every
+// build: "HWNM", u32 version 1, u32 languages; per language char code[8] (language.txt's), u32 count and count records of
+// char name[48] (the game's item name) and char text[64] (UTF-8)), the records of the language the game runs in
+// (i18n::game_language()) read the first time the wheel shows. None (no file, or not that language): the host's labels
+static std::vector<std::pair<std::string, std::string>> wheel_names;
+static void wheel_names_load() {
+    static bool tried = false;
+    if (tried) return;
+    tried = true;
+    char exe[MAX_PATH];
+    const DWORD n = game_module_path(exe, MAX_PATH);
+    std::string path(exe, n);
+    path = path.substr(0, path.find_last_of("\\/") + 1) + "wheel/names.bin";
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) {
+        logf("wheel: no names (%s): the items' English names", path.c_str());
+        return;
+    }
+    const std::string& want = i18n::game_language();
+    auto same = [](const char* a, const std::string& b) {
+        if (strlen(a) != b.size()) return false;
+        for (size_t i = 0; i < b.size(); i++)
+            if (std::tolower((unsigned char)a[i]) != std::tolower((unsigned char)b[i])) return false;
+        return true;
+    };
+    char magic[4];
+    uint32_t hd[2];
+    if (fread(magic, 1, 4, f) == 4 && !std::memcmp(magic, "HWNM", 4) && fread(hd, 4, 2, f) == 2 && hd[0] == 1 && hd[1] <= 64) {
+        for (uint32_t l = 0; l < hd[1]; l++) {
+            char code[9] = {};
+            uint32_t count = 0;
+            if (fread(code, 1, 8, f) != 8 || fread(&count, 4, 1, f) != 1 || count > 4096) break;
+            const bool mine = same(code, want);
+            for (uint32_t i = 0; i < count; i++) {
+                char rec[112];
+                if (fread(rec, 1, sizeof rec, f) != sizeof rec) break;
+                if (!mine) continue;
+                rec[47] = 0, rec[111] = 0;
+                wheel_names.emplace_back(rec, rec + 48);
+            }
+            if (mine) break;
+        }
+    }
+    fclose(f);
+    logf("wheel: %d names in %s from %s", (int)wheel_names.size(), want.c_str(), path.c_str());
+}
+// what the player reads for an item: the game's own name in its language, else the host's label
+static const char* wheel_name(const char* name, const char* label) {
+    for (const auto& n : wheel_names)
+        if (n.first == name) return n.second.c_str();
+    return label;
+}// an icon side px wide centred on m (its cell's texels, half a texel in from the edges)
+static void wheel_draw_icon(ui::Ctx& c, const WheelIcon& ic, ImVec2 m, float side, ImU32 tint = IM_COL32_WHITE) {
     if (!wheel_atlas || side <= 0) return;
     const float cell = (float)(wheel_icon_px + 2), aw = (float)wheel_atlas->Width, ah = (float)wheel_atlas->Height;
     const float x0 = ic.cell % wheel_cols * cell + 1, y0 = ic.cell / wheel_cols * cell + 1;
     const ImVec2 uv0((x0 + 0.5f) / aw, (y0 + 0.5f) / ah), uv1((x0 + wheel_icon_px - 0.5f) / aw, (y0 + wheel_icon_px - 0.5f) / ah);
-    c.d->AddImage(wheel_atlas->GetTexRef(), m - ImVec2(side, side) * 0.5f, m + ImVec2(side, side) * 0.5f, uv0, uv1);
+    c.d->AddImage(wheel_atlas->GetTexRef(), m - ImVec2(side, side) * 0.5f, m + ImVec2(side, side) * 0.5f, uv0, uv1, tint);
 }
 
 // This frame's wheel from the host (a seqlock: odd while the host writes it); false when it is not shown. The opening's
@@ -4778,6 +4818,7 @@ static bool wheel_update() {
         std::atomic_thread_fence(std::memory_order_acquire);
         if (__atomic_load_n(&src->seq, __ATOMIC_ACQUIRE) == s1) {   // (else written meanwhile: the last frame's again)
             copy.count = std::min(copy.count, (int32_t)MKWVK_WHEEL_MAX);
+            copy.held_name[sizeof copy.held_name - 1] = 0;
             for (int i = 0; i < copy.count; i++)
                 copy.label[i][sizeof copy.label[i] - 1] = 0, copy.name[i][sizeof copy.name[i] - 1] = 0;
             wheel_now = copy;
@@ -4829,58 +4870,115 @@ static void wheel_disc(ui::Ctx& c, ImVec2 m, float r, float e, ImU32 fill, ImU32
 
 static void draw_wheel(ui::Ctx& c) {
     wheel_icons_load();
+    wheel_names_load();
     const MkwVkWheel& wh = wheel_now;
-    const int n = wh.count;
+    auto label = [&](int i) { return wheel_name(wh.name[i], wh.label[i]); };
+    const int n = std::min((int)wh.count, (int)MKWVK_WHEEL_SLOTS);
     const float u = std::max(1.0f, std::floor(c.h / 100));   // (a hundredth of the window's height)
-    const ImVec2 m(std::floor(c.w / 2), std::floor(c.h / 2));
-    float ring_r, slot_r, centre_r, inner_r;
-    wheel_geometry(u, n, &ring_r, &slot_r, &centre_r, &inner_r);
+    const ImVec2 m(std::floor(c.w / 2), std::floor(c.h / 2));   // (host/oot_wheel.c slot_under has the same centre)
+    float ring_r, slot_r, centre_r;
+    wheel_geometry(u, &ring_r, &slot_r, &centre_r);
     const ImU32 dark = ui::rgba(22, 24, 34), rim = ui::rgba(120, 112, 88), gold = ui::rgba(236, 196, 84),
-                gold_dark = ui::rgba(70, 56, 18), white = ui::rgba(244, 244, 236), line = ui::rgba(84, 78, 62);
+                gold_dark = ui::rgba(70, 56, 18), white = ui::rgba(244, 244, 236), line = ui::rgba(84, 78, 62),
+                faint = ui::rgba(22, 24, 34, 110), faint_rim = ui::rgba(120, 112, 88, 90);
     const float thick = std::max(2.0f, u / 2), edge = std::max(2.0f, std::floor(u / 3)), o = std::max(1.0f, std::floor(u / 5));
     c.d->AddCircle(m, ring_r * wheel_spread, line, 0, thick);
-    if (inner_r != ring_r) c.d->AddCircle(m, inner_r * wheel_spread, line, 0, thick);
     wheel_disc(c, m, centre_r, edge, dark, gold);
-    const int focus = wh.pick >= 0 && wh.pick < n ? wh.pick : wh.cursor;
+    auto has = [&](int i) { return i >= 0 && i < n && wh.name[i][0] != 0; };
+    const bool moving = wh.held_name[0] != 0;   // (an item taken up with Y: in the hub, its slot faint, the ring where it would go)
+    // (an empty slot pointed at: nothing named, nothing in the hub)
+    const bool on_empty = wh.pick >= 0 && wh.pick < n && !has(wh.pick);
+    const int focus = moving || on_empty ? -1 : has(wh.pick) ? wh.pick : has(wh.cursor) ? wh.cursor : -1;
+    const ImU32 move_col = ui::rgba(110, 170, 240);
+    // (while an item is held and pointed somewhere else, the move is shown as it would come out: the held item in the slot
+    // pointed at, and what was there, faint, in the slot it came from; the two slots' names and counts left out)
+    const int target = moving && wh.pick >= 0 && wh.pick < n && wh.pick != wh.held ? wh.pick : -1;
+    auto in_move = [&](int i) { return moving && (i == target || i == wh.held); };
     for (int i = 0; i < n; i++) {
-        const ImVec2 p = wheel_slot_at(i, n, m, ring_r, inner_r);
-        const bool on = i == wh.cursor, picked = i == wh.pick;
-        if (picked) c.d->AddCircleFilled(p, slot_r + std::max(2.0f, u / 2), white);
+        const ImVec2 p = wheel_slot_at(i, m, ring_r);
+        const char* shown = i == target ? wh.held_name : target >= 0 && i == wh.held ? wh.name[target] : wh.name[i];
+        if (!shown[0]) {   // (an empty slot: there, so the eight directions read as eight; ringed when pointed at)
+            wheel_disc(c, p, slot_r * 0.8f, edge, faint, moving && i == wh.held ? move_col : faint_rim);
+            if (i == wh.pick) c.d->AddCircle(p, slot_r * 0.8f + std::max(1.0f, u / 4), moving ? move_col : white, 0, std::max(2.0f, u / 2));
+            continue;
+        }
+        const bool on = i == wh.cursor && !in_move(i), picked = i == wh.pick;
+        if (picked) c.d->AddCircleFilled(p, slot_r + std::max(2.0f, u / 2), moving ? move_col : white);
+        if (moving && i == wh.held) {   // (the slot it was taken from: faint, with what would go there)
+            wheel_disc(c, p, slot_r, edge, faint, move_col);
+            if (const WheelIcon* ic = wheel_icon(shown)) wheel_draw_icon(c, *ic, p, slot_r * 1.38f, IM_COL32(255, 255, 255, target >= 0 ? 140 : 70));
+            continue;
+        }
         wheel_disc(c, p, slot_r, edge, on ? gold_dark : dark, on ? gold : rim);
-        if (const WheelIcon* ic = wheel_icon(wh.name[i])) wheel_draw_icon(c, *ic, p, slot_r * 1.38f);
+        if (const WheelIcon* ic = wheel_icon(shown)) wheel_draw_icon(c, *ic, p, slot_r * 1.38f);
     }
-    const WheelIcon* focus_icon = focus >= 0 && focus < n ? wheel_icon(wh.name[focus]) : nullptr;
+    const WheelIcon* focus_icon = moving ? wheel_icon(wh.held_name) : focus >= 0 ? wheel_icon(wh.name[focus]) : nullptr;
     if (focus_icon) wheel_draw_icon(c, *focus_icon, m, centre_r * 1.3f);
     ImFont* font = c.f.strong;
     const float small = std::max(10.0f, std::round(1.7f * u)), big = std::max(14.0f, std::round(2.4f * u)),
                 name_px = std::max(16.0f, std::round(3.3f * u)), count_px = std::max(12.0f, std::round(slot_r * 0.52f));
     for (int i = 0; i < n; i++) {   // (names only where the game has no icon for the item)
-        if (wheel_icon(wh.name[i])) continue;
-        wheel_label(c, font, small, wheel_slot_at(i, n, m, ring_r, inner_r), wh.label[i], 2 * slot_r - u, i == wh.cursor ? gold : white, o);
+        if (!has(i) || wheel_icon(wh.name[i]) || in_move(i)) continue;
+        wheel_label(c, font, small, wheel_slot_at(i, m, ring_r), label(i), 2 * slot_r - u, i == wh.cursor ? gold : white, o);
     }
     for (int i = 0; i < n; i++) {   // (the counts, as the game's HUD shows them: at a slot's lower right, grey at none left)
-        if (wh.amount[i] < 0) continue;
-        const ImVec2 p = wheel_slot_at(i, n, m, ring_r, inner_r);
+        if (!has(i) || wh.amount[i] < 0 || in_move(i)) continue;
+        const ImVec2 p = wheel_slot_at(i, m, ring_r);
         char num[12];
         snprintf(num, sizeof num, "%d", (int)wh.amount[i]);
         const float tw = ui::size_of(font, count_px, num).x;
         wheel_text(c, font, count_px, ImVec2(p.x + slot_r - tw, ui::mid_top(font, count_px, p.y + slot_r - count_px * 0.45f)),
                    wh.amount[i] ? ui::rgba(250, 250, 240) : ui::rgba(150, 150, 150), num, o);
     }
-    if (focus >= 0 && focus < n && !focus_icon)   // (an item with no icon: its name in the middle too)
-        wheel_label(c, font, big, m, wh.label[focus], 2 * centre_r - 2 * u, focus == wh.cursor ? gold : white, o);
+    if (focus >= 0 && !focus_icon)   // (an item with no icon: its name in the middle too)
+        wheel_label(c, font, big, m, label(focus), 2 * centre_r - 2 * u, focus == wh.cursor ? gold : white, o);
+    // the pages: a dot each under the banner, this one gold, with an arrow either side
+    if (wh.pages > 1) {
+        const float py = m.y + wheel_banner_y(u, ring_r, slot_r) + (kWheelBannerHalf + 1.8f) * u, dot = std::max(3.0f, 0.55f * u),
+                    gap = 2.2f * u;
+        const float x0 = m.x - gap * (wh.pages - 1) * 0.5f;
+        for (int p = 0; p < wh.pages; p++) {   // (the player's pages filled, the others' a ring, a new one a ring with a cross)
+            const ImVec2 d(x0 + gap * p, py);
+            const float r = p == wh.page ? dot * 1.3f : dot;
+            const ImU32 col = p == wh.page ? gold : rim;
+            const int kind = p < (int)sizeof wh.page_kind ? wh.page_kind[p] : 0;
+            if (kind == 0) c.d->AddCircleFilled(d, r, col);
+            else c.d->AddCircle(d, r, col, 0, std::max(1.5f, u / 4));
+            if (kind == 2) {
+                c.d->AddLine(d - ImVec2(r * 0.6f, 0), d + ImVec2(r * 0.6f, 0), col, std::max(1.5f, u / 4));
+                c.d->AddLine(d - ImVec2(0, r * 0.6f), d + ImVec2(0, r * 0.6f), col, std::max(1.5f, u / 4));
+            }
+        }
+        const float ax = gap * (wh.pages - 1) * 0.5f + 2.2f * u, ah = 0.9f * u;
+        c.d->AddTriangleFilled(ImVec2(m.x - ax - ah, py), ImVec2(m.x - ax + ah * 0.6f, py - ah), ImVec2(m.x - ax + ah * 0.6f, py + ah), white);
+        c.d->AddTriangleFilled(ImVec2(m.x + ax + ah, py), ImVec2(m.x + ax - ah * 0.6f, py - ah), ImVec2(m.x + ax - ah * 0.6f, py + ah), white);
+    }
     // the name banner under the ring, Twilight Princess style: the focused item's name on a dark plate with round ends
-    const char* name = focus >= 0 && focus < n ? wh.label[focus] : "";
+    const char* name = moving ? wheel_name(wh.held_name, wh.held_name) : focus >= 0 ? label(focus) : "";
     if (*name) {
         const float by = m.y + wheel_banner_y(u, ring_r, slot_r), hh = kWheelBannerHalf * u;
         const float tw = ui::size_of(font, name_px, name).x;
         const float half_w = std::min(c.w / 2 - 1, std::max(16 * u, tw / 2 + 4 * u));
-        const ImU32 edge_col = focus == wh.cursor ? gold : rim;
+        const ImU32 edge_col = moving ? move_col : focus == wh.cursor ? gold : rim;
         c.d->AddRectFilled(ImVec2(m.x - half_w, by - hh), ImVec2(m.x + half_w, by + hh), edge_col, hh);
         c.d->AddRectFilled(ImVec2(m.x - half_w + edge, by - hh + edge), ImVec2(m.x + half_w - edge, by + hh - edge), dark,
                            std::max(0.0f, hh - edge));
-        wheel_text(c, font, name_px, ImVec2(m.x - tw * 0.5f, ui::mid_top(font, name_px, by)), focus == wh.cursor ? gold : white,
+        wheel_text(c, font, name_px, ImVec2(m.x - tw * 0.5f, ui::mid_top(font, name_px, by)), !moving && focus == wh.cursor ? gold : white,
                    name, o);
+    }
+    // the prompts over the wheel, with the controller's dots as the Insert menu's: the button bound to the Switch's Y
+    // (wherever the layout puts it) takes an item up to move it; while one is held, it puts it down and B puts it back
+    if (n > 0) {
+        ui::Ctx k = c;
+        k.pad = true, k.s = std::max(1.0f, u / 9.0f);   // (the wheel's size: 1 at 900 pixels high)
+        const int y_at = host && host->binding ? host->binding(HOS_BIND_PAD, HOS_SW_Y, 0) : HOS_PAD_WEST;
+        k.confirm_dot = menu_keys::dot(y_at >= 0 ? y_at : HOS_PAD_WEST);
+        const std::string act = i18n::tr(moving ? "Confirm" : "Move"), back = i18n::tr("Cancel");
+        const ui::Prompt list[2] = {{ui::kConfirm, act.c_str()}, {ui::kBack, back.c_str()}};
+        const int np = moving ? 2 : 1;
+        const float pw = ui::prompts(k, ImVec2(0, 0), list, np, false);
+        const float py = m.y - (ring_r + slot_r) * wheel_spread - 1.6f * u - (17 + 10) * k.s;   // (vk_ui.h prompts: a line 27 points high)
+        ui::prompts(k, ImVec2(std::floor(m.x - pw * 0.5f), std::floor(py)), list, np, true);
     }
 }
 
