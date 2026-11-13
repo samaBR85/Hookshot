@@ -4660,6 +4660,7 @@ static ImVec2 wheel_slot_at(int i, ImVec2 c, float ring_r) {
 struct WheelIcon {
     char name[48];
     int cell;
+    float off_x, off_y;   // (where the drawing's own middle is, from the picture's, in pictures: the game's icons are not all centred)
 };
 static std::vector<WheelIcon> wheel_icons;
 static ImTextureData* wheel_atlas = nullptr;
@@ -4689,6 +4690,15 @@ static void wheel_icons_load() {
             if (fread(ic.name, 1, sizeof ic.name, f) != sizeof ic.name || fread(px.data(), 1, bytes, f) != bytes) break;
             ic.name[sizeof ic.name - 1] = 0;
             ic.cell = (int)wheel_icons.size();
+            {   // (the drawing's box: its pixels more than faintly opaque; drawn with its middle on the slot's)
+                const int s = (int)hd[2];
+                int x0 = s, y0 = s, x1 = -1, y1 = -1;
+                for (int y = 0; y < s; y++)
+                    for (int x = 0; x < s; x++)
+                        if (px[((size_t)y * s + x) * 4 + 3] > 24) x0 = std::min(x0, x), y0 = std::min(y0, y), x1 = std::max(x1, x), y1 = std::max(y1, y);
+                if (x1 >= x0 && y1 >= y0)
+                    ic.off_x = ((x0 + x1 + 1) * 0.5f - s * 0.5f) / s, ic.off_y = ((y0 + y1 + 1) * 0.5f - s * 0.5f) / s;
+            }
             wheel_icons.push_back(ic);
             pixels.push_back(std::move(px));
         }
@@ -4800,6 +4810,7 @@ static void wheel_draw_icon(ui::Ctx& c, const WheelIcon& ic, ImVec2 m, float sid
     const float cell = (float)(wheel_icon_px + 2), aw = (float)wheel_atlas->Width, ah = (float)wheel_atlas->Height;
     const float x0 = ic.cell % wheel_cols * cell + 1, y0 = ic.cell / wheel_cols * cell + 1;
     const ImVec2 uv0((x0 + 0.5f) / aw, (y0 + 0.5f) / ah), uv1((x0 + wheel_icon_px - 0.5f) / aw, (y0 + wheel_icon_px - 0.5f) / ah);
+    m = m - ImVec2(ic.off_x, ic.off_y) * side;   // (the drawing's middle on m)
     c.d->AddImage(wheel_atlas->GetTexRef(), m - ImVec2(side, side) * 0.5f, m + ImVec2(side, side) * 0.5f, uv0, uv1, tint);
 }
 
